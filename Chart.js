@@ -35,6 +35,17 @@ var OPTIONS_DEFAULT = {
     PositiveCandleBorderColor   : "Green",
     //sets color for candles shadow
     ShadowColor                 : "Black",
+    //sets chart time step in minutes
+    //(if zero - value would be determined automatically using minimal difference between two adjacent candles in data array)
+    TimeStep                    : 0,
+    //minimal price difference in points i.e. if minimal price change is .25 then MinStep have to be set to 25 and decimals to .01
+    //if zero - would be determined automatically by analyzing data array
+    MinStep                     : 0,
+    //quantity of decimal places after dot
+    //if zero - would be determined automatically by analyzing data array
+    Decimals                    : 0
+
+
 };
 
 var AXIS_MARK_SIZE = 3; //3 px for axis mark
@@ -246,6 +257,9 @@ scaleFactor: 1 - display whole dataset,  < 1 same as 1, > 1
 var Chart = {};
 
 Chart.create = function(width, height, data, options){
+    if (data.length < 2)
+        return null;
+
      var csc = new CandleStickChart(width, height, data, options);
      csc.initialize();
      Chart.current = csc;
@@ -259,28 +273,59 @@ function CandleStickChart(width, height, data, options, chartOptions){
      this.width = width;
      this.height = height;
      this.scale = INITIAL_SCALE;
-     if (!chartOptions)
-        this.chartOptions = {
-            useLogScale : true,
-            decimals : 0,
-            minStep : 1,
-            autoTimeStep : true,
-            timeStep : 0
-        };
-     else{
-        this.chartOptions = chartOptions;
-     }
+
 }
 
 CandleStickChart.prototype.initialize = function(){
-     //this.scale = 2;
-     this.initializeView();
-     this.prepareLayout();
-     this.fitView();
-     //helpers.fillCanvas(this.view.grid_ctx, "yellow");
-     //helpers.fillCanvas(this.view.main_ctx, "blue");
-     //helpers.fillCanvas(this.view.xAxis_ctx, "Red");
-     //helpers.fillCanvas(this.view.yAxis_ctx, "Green");
+    //this.scale = 2;
+    if (!this.options.MinStep
+        || !this.options.Decimals
+        || !this.options.TimeStep){
+        var minStep = 0;
+        var timeStep = null;
+        for (var i = 1; i < this.data.length; i++){
+            var cur = this.data[i];
+            var prev = this.data[i-1];
+            var tt = cur.key - prev.key;
+            if (!timeStep)
+                timeStep = tt;
+            if (timeStep > tt) timeStep = tt;
+            var a = [];
+            var m1 = Math.abs(cur.open - cur.close);
+            if (m1 > 0)
+                a.push(m1);
+            var m2 = Math.abs(cur.high - cur.open);
+            if (m2 > 0)
+                a.push(m2);
+            var m3 = Math.abs(cur.high - cur.close);
+            if (m3 > 0)
+                a.push(m3);
+            var m4 = Math.abs(cur.low - cur.open);
+            if (m4 > 0)
+                a.push(m4);
+            var m5 = Math.abs(cur.low - cur.close);
+            if (m5 > 0)
+                a.push(m5);
+            var m = Math.min.apply(null, a);
+            if (!minStep)
+                minStep = m;
+            if (minStep > m) minStep = m;
+        }
+        var decimals = Math.pow(10, -helpers.getDecimalPlaces(minStep));
+        if (!this.options.MinStep)
+            this.options.MinStep = Math.round(minStep / decimals);
+        if (!this.options.Decimals)
+            this.options.Decimals = decimals;
+        if (!this.options.TimeStep)
+            this.options.TimeStep = timeStep;
+    }
+    this.initializeView();
+    this.prepareLayout();
+    this.fitView();
+    //helpers.fillCanvas(this.view.grid_ctx, "yellow");
+    //helpers.fillCanvas(this.view.main_ctx, "blue");
+    //helpers.fillCanvas(this.view.xAxis_ctx, "Red");
+    //helpers.fillCanvas(this.view.yAxis_ctx, "Green");
 }
 
 CandleStickChart.prototype.initializeView = function(){     
@@ -488,59 +533,37 @@ CandleStickChart.prototype.calculateLayout = function(data, startIndex, count){
     var max = data[startIndex].high;
     var min = data[startIndex].low;
 
-    //minimal step by time between elements
-    var minTimeStep = null;
-    for (var i = startIndex + 1; i < count; i++){
-        var item = data[i]; //acquire min and max values
+    for (var i = 1; i < count; i++){
+        var item = data[startIndex + i]; //acquire min and max values
         if (item.high > max) max = item.high;
         if (item.low < min) min = item.low;
-
-        var timeStep = item.key - this.data[index + 1].key;
-        if (!minTimeStep)
-            minTimeStep = timeStep;
-        else if (timeStep < minTimeStep) minTimeStep = timeStep;
     }
 
-    var diff = max - min;
-    //premature y axis step size
-    var yStepSize = Math.pow(10, helpers.orderOfMagnitude(diff));
-    //correct yStepSize to have more frequent
-    var totalSteps = Math.round(diff / yStepSize);
-    //adjust steps to desired density
-
+    var mainHeight = this.height - this.bottomHeight;
     var maxYSteps = Math.floor(mainHeight / this.options.axisFontSize / 3);
 
-    while (totalSteps > maxYSteps || totalSteps * 2 < maxYSteps){
-        if (totalSteps > maxYSteps){
-            yStepSize *= 2; //increase step size by 2 times to achive lower density of y lables
-            totalSteps = Math.round(diff / yStepSize);
-        }
-        else{
-            //decrease step size by 2 times to achive higher density of y labels
-            var currentStepSize = yStepSize / 2;
-            //we need to asure that step size is not to low compared to minMove
-            if (helpers.getDecimalPlaces(currentStepSize) <= decimals){
-             yStepSize = currentStepSize;
-             totalSteps = Math.round(diff / yStepSize);
-            }
-            else break; //if it's too low - end cycle
-        }
-    }
+    var diff = max - min;
+
+    var decimals = helpers.getDecimalPlaces(this.options.Decimals);
+    var k = this.options.MinStep*this.options.Decimals;
+    var evalStep = diff / maxYSteps;
+
+    var logStep = Math.pow(10, helpers.orderOfMagnitude(evalStep));
+    var step = Math.floor(Math.ceil(evalStep / logStep) / k) * k;
+
     var origMin = min,
         origMax = max;
     //correct min and max to have some blank space at the top and the bottom of chart
-    var min = min - min % yStepSize;
-    var max = max + yStepSize - max % yStepSize;
-
-    var decimals = maxDecimals;
+    var min = min - min % step;
+    var max = max + step - max % step;
 
     var yLables = [];
     var current = min;
     while (current <= max){
         yLables.push(current.toFixed(decimals));
-        current += yStepSize;
+        current += step;
     }
-    //calculate width of y width, multiply it by 1.1 to make it 10 percent wider for
+    //calculate width item.keyof y width, multiply it by 1.1 to make it 10 percent wider for
     var yWidth = Math.round(helpers.longestText(this.view.yAxis_ctx, yLables) * 1.1 + AXIS_MARK_SIZE + 2);
 
     var mainWidth = Math.floor(this.width - yWidth);
@@ -553,9 +576,8 @@ CandleStickChart.prototype.calculateLayout = function(data, startIndex, count){
         min             : min,
         origMax         : origMax,
         origMin         : origMin,
-        timeStep        : minTimeStep,
         decimals        : decimals,
-        yStepSize       : yStepSize,
+        yStepSize       : step,
         mainWidth       : mainWidth,
         mainHeight      : mainHeight,
         yWidth 	        : yWidth,
@@ -565,33 +587,32 @@ CandleStickChart.prototype.calculateLayout = function(data, startIndex, count){
 }
 
 CandleStickChart.prototype.prepareLayout = function(){
-     if (this.data.length == 0)
-         return;
+    if (this.data.length <= 1)
+        return;
 
-     //oofset by x axis where last candle will be
-     if (this.xOffset == undefined)
-          this.xOffset = 0;
+    //oofset by x axis where last candle will be
+    if (this.xOffset == undefined)
+        this.xOffset = 0;
 
-     //lastIndex - index of last visible candle
-     if (this.lastIndex == undefined){
-         this.lastIndex = this.data.length - 1;
-     }
-     var maxElement2Display = Math.floor(this.width / this.scale);
-   
-     var correction = 0;
-     //in case, that we display blank space on the right after chart we will get lastIndex out of bound of data
-     //so we have to correct lastIndex to be inside data array
-     if (this.lastIndex > this.data.length - 1){
-          correction = this.lastIndex - this.data.length + 1;
-     }
-     //corrected lastIndex
-     var lastIndex = this.lastIndex - correction;
+    //lastIndex - index of last visible candle
+    if (this.lastIndex == undefined){
+        this.lastIndex = this.data.length - 1;
+    }
+    var maxElement2Display = Math.floor(this.width / this.scale);
 
+    var correction = 0;
+    //in case, that we display blank space on the right after chart we will get lastIndex out of bound of data
+    //so we have to correct lastIndex to be inside data array
+    if (this.lastIndex > this.data.length - 1){
+        correction = this.lastIndex - this.data.length + 1;
+    }
 
-     var layout = calculateLayout(this.data, lastIndex - maxElement2Display - correction, maxElement2Display - correction);
+    var firstIndex = Math.max(0, this.lastIndex- maxElement2Display);
+    var count = Math.max(0, maxElement2Display - correction);
 
-     this.layout = layout;
+    var layout = this.calculateLayout(this.data, firstIndex, count);
 
+    this.layout = layout;
 }
 
 
@@ -758,7 +779,7 @@ CandleStickChart.prototype.scroll = function(diff){
      }
      
      if (this.lastIndex < 0) this.lastIndex = 0;
-     
+
      this.prepareLayout();
      this.draw();     
 }
