@@ -1,3 +1,16 @@
+/*
+todo выносим Chart как базовый для рисования нескольких типов графиков.
+todo несколько панелей с графиками - возможность добавления индикаторов под освновной график
+todo Разобраться с .5 для линий. Как рисовать так чтобы было красиво?
+todo Почему то при scale = 2 получается, что свечки друг на друга залезают и последняя свечка уходит половинкой за ось У
+todo Обработка масштабривания окна и канваса. Не масштабируется в высоту
+todo Доделать нормально разметку горизонтальной оси, чтобы выводить через равные промежутки
+todo Перерисовка графика - добавить возможность добавлять и обновлять свечки.
+todo Учесть возможность добавления истории в начало графика
+todo Курсор выделения свечей (Переходим на систему вычисление координаты Х из вермени?)
+todo Все равно не быстро скроллится на планшете. Поизучать еще оптимизацию отрисовки. Бысто скроллится на маленьком канвасе - уверен отрисовка зависит от размера канваса
+*/
+
 //(function(){
 "use strict";
 //1 px is minimal spacce between two x points
@@ -196,16 +209,22 @@ helpers.registerEvent = function(element, event, handler){
           element.attachEvent("on"+event, handler);
      }
 };
+//extend for inheritance
+helpers.extend = function(baseType, type){
+    var f = function() { };
+    f.prototype = baseType.prototype;
+    type.prototype = new f();
+    type.prototype.constructor = type;
+    type.superclass = baseType.prototype;
+}
 
 helpers.getMaximumWidth = function(domNode) {
   var container = domNode.parentNode;
-  // TODO = check cross browser stuff with this.
   return container.clientWidth;
 };
 
 helpers.getMaximumHeight = function(domNode) {
   var container = domNode.parentNode;
-  // TODO = check cross browser stuff with this.
   return container.clientHeight;
 };
 
@@ -260,27 +279,348 @@ Chart.create = function(width, height, data, options){
     if (data.length < 2)
         return null;
 
-     var csc = new CandleStickChart(width, height, data, options);
+     var csc = new CandleStickChart(data, options);
      csc.initialize();
-     Chart.current = csc;
-     
-     return csc;
+     var view = new ChartView(width, height, options);
+     csc.prepareLayout();
+     view.chart(csc);
+     view.fitView();
+     view.draw();
+     return view;
+
 }
 
-function CandleStickChart(width, height, data, options, chartOptions){
-     this.options = helpers.merge(options, OPTIONS_DEFAULT);
-     this.data = data;
-     this.width = width;
-     this.height = height;
-     this.scale = INITIAL_SCALE;
+function ChartView(width, height, options){
+    this.view = {
+        width       : width,
+        height      : height,
+        container   : document.createElement("div"),
+        main        : document.createElement("canvas"),
+        grid        : document.createElement("canvas"),
+        xAxis       : document.createElement("canvas"),
+        yAxis       : document.createElement("canvas")
+    };
 
+    this.options = options;
+
+    this.view.container.id = "stock-chart-container";
+    this.view.container.appendChild(this.view.main);
+    this.view.container.appendChild(this.view.grid);
+    this.view.container.appendChild(this.view.xAxis);
+    this.view.container.appendChild(this.view.yAxis);
+
+    this.view.main_ctx = this.view.main.getContext('2d');
+    this.view.grid_ctx = this.view.grid.getContext('2d');
+    this.view.xAxis_ctx = this.view.xAxis.getContext('2d');
+    this.view.yAxis_ctx = this.view.yAxis.getContext('2d');
+
+    this.bottomHeight = this.options.axisFontSize + AXIS_MARK_SIZE + 2;
+
+    //setup x axis
+    this.view.xAxis.style.position = "absolute";
+    this.view.xAxis_ctx.font = helpers.makeFont(this.options.axisFontSize, this.options.axisFont);
+    this.view.xAxis_ctx.fillStyle = this.options.axisColor;
+    this.view.xAxis_ctx.textAlign = "center";
+    this.view.xAxis_ctx.textBaseline = "top";
+    helpers.setCanvasHeight(this.view.xAxis_ctx, this.bottomHeight);
+    this.view.xAxis.style.left = helpers.stylePx(0);
+    this.view.xAxis.style.zIndex = 2;
+
+    //setup y axis
+    this.view.yAxis.style.position = "absolute";
+    this.view.yAxis_ctx.font = helpers.makeFont(this.options.axisFontSize, this.options.axisFont);
+    this.view.yAxis_ctx.fillStyle = this.options.axisColor;
+    this.view.yAxis_ctx.textAlign = "left";
+    this.view.yAxis_ctx.textBaseline = "middle";
+    this.view.yAxis.style.zIndex = 2;
+
+    //setup main
+    this.view.main.style.position = "absolute";
+    this.view.main.style.left = helpers.stylePx(0);
+    this.view.main.style.top = helpers.stylePx(0);
+    this.view.main.style.zIndex = 2;
+
+    //setup grid
+    this.view.grid.style.position = "absolute";
+    this.view.grid.style.left = helpers.stylePx(0);
+    this.view.grid.style.top = helpers.stylePx(0);
+    this.view.grid.style.zIndex = 1;
+
+    function registerEvents(){
+        var mouseDown = false;
+        var timeout = null;
+        var startX = 0;
+        var frame = null;
+
+        var cont = document.getElementById("chart-container");
+        var currH = window.innerHeight;//document.body.offsetHeight;//document.body.clientHeight;
+        var currW = window.innerWidth;//document.body.offsetWidth;
+
+        helpers.registerEvent(this.view.main, "mousedown", function (event) {
+            if (event.which == 1)
+                mouseDown = true;
+            if (mouseDown) {
+                startX = event.clientX;
+            }
+        });
+
+        helpers.registerEvent(this.view.main, "mouseup", function (event) {
+            if (event.which == 1)
+                mouseDown = false;
+        });
+
+        helpers.registerEvent(this.view.main, "touchend", function(event){ mouseDown = false;});
+
+        helpers.registerEvent(this.view.main, "mouseout", function (event) {
+            if (mouseDown) mouseDown = false;
+        });
+
+        helpers.registerEvent(this.view.main, "touchstart", function(event){
+            if (event.touches.length == 1){
+                mouseDown = true;
+                startX = event.touches[0].clientX;
+            }
+        });
+
+        var scrollHandler = function (event) {
+            if (mouseDown) {
+                event.preventDefault();
+                var x = event.clientX;
+                //scrolling
+                if (frame)
+                    cancelAnimationFrame(frame);
+
+                frame = requestAnimationFrame(function () {
+                    Chart.current.scroll(x - startX);
+                    startX = x;
+                });
+            }
+        };
+
+        helpers.registerEvent(this.view.main, "touchmove", function(event){
+            if (event.touches.length == 1){
+                if (mouseDown){
+                    event.preventDefault();
+                    var x = event.touches[0].clientX;
+                    //scrolling
+                    if (frame)
+                        cancelAnimationFrame(frame);
+
+                    frame = requestAnimationFrame(function () {
+                        Chart.current.scroll(x - startX);
+                        startX = x;
+                    });
+                }
+            }
+        });
+
+        helpers.registerEvent(this.view.main, "mousemove", scrollHandler);
+
+        var cw = cont.offsetWidth;
+
+        helpers.registerEvent(window, "resize", function (event) {
+            return;
+            if (frame)
+                cancelAnimationFrame(frame);
+            //var h = document.body.offsetHeight;
+            //var w = document.body.offsetWidth;
+            var h = window.innerHeight;
+            var w = window.innerWidth;
+
+            if (currH == h && currW == w) return;
+
+            frame = requestAnimationFrame(function () {
+                Chart.current.resize(currW, currH, w, h);
+                currH = h;
+                currW = w;
+                cw = cont.offsetWidth;
+            });
+        });
+    }
+
+    registerEvents.call(this);
+}
+
+ChartView.prototype.chart = function(chart){
+    this.chart = chart;
+    this.fitView();
+}
+
+ChartView.prototype.fitView = function(){
+    //layout container
+    var layout = this.chart.layout;
+    var yWidth =  Math.round(helpers.longestText(this.view.yAxis_ctx, layout.yLables) * 1.1 + AXIS_MARK_SIZE + 2);
+    var mainHeight = this.view.height - this.bottomHeight;
+    var mainWidth = Math.floor(this.width - yWidth);
+
+    this.view.container.style.width = helpers.stylePx(this.view.width);
+    this.view.container.style.height = helpers.stylePx(this.view.height);
+
+     //correct dimensions and setup canvas
+     helpers.setCanvasWidth(this.view.yAxis_ctx, yWidth);
+     helpers.setCanvasHeight(this.view.yAxis_ctx, mainHeight);
+     this.view.yAxis.style.left = helpers.stylePx(mainWidth);
+
+     this.view.xAxis.style.top = helpers.stylePx(mainHeight);
+     helpers.setCanvasWidth(this.view.xAxis_ctx,mainWidth);
+
+     helpers.setCanvasWidth(this.view.grid_ctx, mainWidth);
+     helpers.setCanvasHeight(this.view.grid_ctx, mainHeight);
+
+     helpers.setCanvasWidth(this.view.main_ctx, mainWidth);
+     helpers.setCanvasHeight(this.view.main_ctx, mainHeight);
+
+     //draw frame
+     this.view.grid_ctx.beginPath();
+     this.view.grid_ctx.moveTo(0, mainHeight);
+     this.view.grid_ctx.strokeStyle = "black";
+     this.view.grid_ctx.lineTo(mainWidth, mainHeight);
+     this.view.grid_ctx.lineTo(mainWidth, 0);
+     this.view.grid_ctx.stroke();
+}
+
+ChartView.prototype.draw = function(){
+    this.chart.draw(this.view, this.options);
+}
+
+//////////////////////////////////BaseChart////////////////////////////////////////////////
+//base constructor for various chart types
+//data is array of points could vary for specefic types of charts
+//chartOptions have to contain MinStep property with minimal value change for chart and Decimals property standing for decimal multiplier of min step
+//ex: value could change for .25 minimally, than MinStep = 25, and decimals = .01
+function BaseChart(data, chartOptions){
+    this.data = data;
+    this.chartOptions = chartOptions;
+}
+//initializes common parameters of the chart. Sets scale to default.
+//Should be called just after chart object creation
+BaseChart.prototype.initialize = function(){
+    this.scale = INITIAL_SCALE;
+
+}
+//override for calculating min and max values for specific chart types
+ //should return object {max, min}
+BaseChart.prototype.calculateBounds = function(data, index, count){
+    //no op basically
+
+}
+//calculates layout parameters for chart
+//real min and max, y axis step size, y axis labels array
+BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, width, options){
+    var bounds = this.calculateBounds(data, firstIndex, count)
+    var max = bounds.max;
+    var min = bounds.min;
+
+    var maxYSteps = Math.floor(height / options.axisFontSize / 3);
+
+    var diff = max - min;
+
+    var decimals = helpers.getDecimalPlaces(this.chartOptions.Decimals);
+    var k = this.chartOptions.MinStep*this.chartOptions.Decimals;
+    var evalStep = diff / maxYSteps;
+
+    var logStep = Math.pow(10, helpers.orderOfMagnitude(evalStep));
+    var step = Math.floor(Math.ceil(evalStep / logStep) / k) * k;
+
+    var origMin = min,
+        origMax = max;
+    //correct min and max to have some blank space at the top and the bottom of chart
+    var min = min - min % step;
+    var max = max + step - max % step;
+
+    var yLables = [];
+    var current = min;
+    while (current <= max){
+        yLables.push(current.toFixed(decimals));
+        current += step;
+    }
+
+    return {
+        max             : max,
+        min             : min,
+        origMax         : origMax,
+        origMin         : origMin,
+        decimals        : decimals,
+        yStepSize       : step,
+        yLabels         : yLables
+    };
+}
+//prepares chart to draw. finnaly sets this.layout property with key drawing parameters.
+//this.layout should be used to calculate y axis width and canvas dimensions
+//height is a height of canvas where chart would be placed (not count x axis heigth or other space)
+//width is the width of canvas where chart would be placed (not count x axis heigth or other space)
+BaseChart.prototype.prepareLayout = function(height, width, options){
+    if (!this.data || !this.data instanceof Array)
+        throw new "Invalid data or data isn't array!";
+
+    if (this.data.length <= 1)
+        return;
+
+    //oofset by x axis where last candle will be
+    if (this.xOffset == undefined)
+        this.xOffset = 0;
+
+    //lastIndex - index of last visible candle
+    if (this.lastIndex == undefined){
+        this.lastIndex = this.data.length - 1;
+    }
+    var maxElement2Display = Math.floor(width / this.scale);
+
+    var correction = 0;
+    //in case, that we display blank space on the right after chart we will get lastIndex out of bound of data
+    //so we have to correct lastIndex to be inside data array
+    if (this.lastIndex > this.data.length - 1){
+        correction = this.lastIndex - this.data.length + 1;
+    }
+
+    var firstIndex = Math.max(0, this.lastIndex- maxElement2Display);
+    var count = Math.max(0, maxElement2Display - correction);
+
+    var layout = this.calculateLayout(this.data, firstIndex, count, height, width);
+
+    this.layout = layout;
+}
+//moves chart's last index accordingly to pixelDiff
+//should be callued when scrolling chart
+BaseChart.prototype.scroll = function(pixelsDiff){
+    var xOffset = this.xOffset + diff;
+    var lastIndex = this.lastIndex;
+    if (lastIndex == 0 && xOffset > 0) {
+        //no need to scroll further because we see the only point
+        this.xOffset = 0;
+        return;
+    }
+
+    var fullSteps = Math.floor(this.xOffset / this.scale);
+    if (fullSteps != 0){
+        xOffset -= fullSteps * this.scale;
+        lastIndex -= fullSteps;
+    }
+    this.xOffset = xOffset;
+
+    if (this.lastIndex < 0) this.lastIndex = 0;
+}
+//draws chart on the view object
+//options contaqins drawing options for various types
+//should be overriden for every specific chart type
+BaseChart.prototype.draw = function(view, options){
+    //no op basically
+
+}
+////////////////////////////////////////BaseChart/////////////////////////////////////////////
+
+///////////////////////////////////////CandleStickChart///////////////////////////////////////
+helpers.extend(BaseChart, CandleStickChart);
+
+
+function CandleStickChart(data, options){
+    CandleStickChart.superclass.constructor.apply(this, arguments);
 }
 
 CandleStickChart.prototype.initialize = function(){
-    //this.scale = 2;
-    if (!this.options.MinStep
-        || !this.options.Decimals
-        || !this.options.TimeStep){
+    if (!this.chartOptions.MinStep
+        || !this.chartOptions.Decimals
+        || !this.chartOptions.TimeStep){
         var minStep = 0;
         var timeStep = null;
         for (var i = 1; i < this.data.length; i++){
@@ -312,554 +652,173 @@ CandleStickChart.prototype.initialize = function(){
             if (minStep > m) minStep = m;
         }
         var decimals = Math.pow(10, -helpers.getDecimalPlaces(minStep));
-        if (!this.options.MinStep)
-            this.options.MinStep = Math.round(minStep / decimals);
-        if (!this.options.Decimals)
-            this.options.Decimals = decimals;
-        if (!this.options.TimeStep)
-            this.options.TimeStep = timeStep;
-    }
-    this.initializeView();
-    this.prepareLayout();
-    this.fitView();
-    //helpers.fillCanvas(this.view.grid_ctx, "yellow");
-    //helpers.fillCanvas(this.view.main_ctx, "blue");
-    //helpers.fillCanvas(this.view.xAxis_ctx, "Red");
-    //helpers.fillCanvas(this.view.yAxis_ctx, "Green");
-}
-
-CandleStickChart.prototype.initializeView = function(){     
-     this.view = {
-          container : document.createElement("div"),
-          main : document.createElement("canvas"),
-          grid : document.createElement("canvas"),
-          xAxis : document.createElement("canvas"),
-          yAxis : document.createElement("canvas")
-     };
-     this.view.container.id = "stock-chart-container";
-     this.view.container.appendChild(this.view.main);
-     this.view.container.appendChild(this.view.grid);
-     this.view.container.appendChild(this.view.xAxis);
-     this.view.container.appendChild(this.view.yAxis);
-     
-     
-     
-     this.view.main_ctx = this.view.main.getContext('2d');
-     this.view.grid_ctx = this.view.grid.getContext('2d');
-     this.view.xAxis_ctx = this.view.xAxis.getContext('2d');
-     this.view.yAxis_ctx = this.view.yAxis.getContext('2d');
-     
-     this.bottomHeight = this.options.axisFontSize + AXIS_MARK_SIZE + 2;
-    
-     //setup x axis
-     this.view.xAxis.style.position = "absolute";
-     this.view.xAxis_ctx.font = helpers.makeFont(this.options.axisFontSize, this.options.axisFont);
-     this.view.xAxis_ctx.fillStyle = this.options.axisColor;
-     this.view.xAxis_ctx.textAlign = "center";
-     this.view.xAxis_ctx.textBaseline = "top";
-     helpers.setCanvasHeight(this.view.xAxis_ctx, this.bottomHeight);
-     this.view.xAxis.style.left = helpers.stylePx(0);
-     this.view.xAxis.style.zIndex = 2;
-          
-     //setup y axis
-     this.view.yAxis.style.position = "absolute";
-     this.view.yAxis_ctx.font = helpers.makeFont(this.options.axisFontSize, this.options.axisFont);
-     this.view.yAxis_ctx.fillStyle = this.options.axisColor;
-     this.view.yAxis_ctx.textAlign = "left";
-     this.view.yAxis_ctx.textBaseline = "middle";          
-     this.view.yAxis.style.zIndex = 2;
-     
-     //setup main
-     this.view.main.style.position = "absolute";
-     this.view.main.style.left = helpers.stylePx(0);
-     this.view.main.style.top = helpers.stylePx(0);
-     this.view.main.style.zIndex = 2;
-          
-     //setup grid
-     this.view.grid.style.position = "absolute";
-     this.view.grid.style.left = helpers.stylePx(0);
-     this.view.grid.style.top = helpers.stylePx(0);
-     this.view.grid.style.zIndex = 1;
-     
-
-     var mouseDown = false;
-     var timeout = null;
-     var startX = 0;
-     var frame = null;
-
-     var cont = document.getElementById("chart-container");
-  var currH = window.innerHeight;//document.body.offsetHeight;//document.body.clientHeight;
-  var currW = window.innerWidth;//document.body.offsetWidth;
-
-     helpers.registerEvent(this.view.main, "mousedown", function (event) {
-       if (event.which == 1)
-         mouseDown = true;
-       if (mouseDown) {
-         startX = event.clientX;
-       }
-     });
-
-     helpers.registerEvent(this.view.main, "mouseup", function (event) {
-       if (event.which == 1)
-         mouseDown = false;
-     });
-     
-     helpers.registerEvent(this.view.main, "touchend", function(event){ mouseDown = false;});
-
-     helpers.registerEvent(this.view.main, "mouseout", function (event) {
-       if (mouseDown) mouseDown = false;
-     });
-     
-     helpers.registerEvent(this.view.main, "touchstart", function(event){
-	if (event.touches.length == 1){
-	    mouseDown = true;
-	    startX = event.touches[0].clientX;
-	}
-     });
-     
-     
-     
-     var scrollHandler = function (event) {
-       if (mouseDown) {
-	event.preventDefault();
-         var x = event.clientX;
-         //scrolling
-         if (frame)
-           cancelAnimationFrame(frame);
-
-         frame = requestAnimationFrame(function () {
-
-           Chart.current.scroll(x - startX);
-           startX = x;
-         });
-       }
-     };
-     
-     helpers.registerEvent(this.view.main, "touchmove", function(event){
-	if (event.touches.length == 1){
-	    if (mouseDown){
-		event.preventDefault();
-		var x = event.touches[0].clientX;
-		//scrolling
-         if (frame)
-           cancelAnimationFrame(frame);
-
-         frame = requestAnimationFrame(function () {
-
-           Chart.current.scroll(x - startX);
-           startX = x;
-         });
-	    }
-	}
-	
-     });
-
-     helpers.registerEvent(this.view.main, "mousemove", scrollHandler);
-
-  var cw = cont.offsetWidth;
-    
-     helpers.registerEvent(window, "resize", function (event) {
-
-     return;
-       if (frame)
-         cancelAnimationFrame(frame);
-       //var h = document.body.offsetHeight;
-       //var w = document.body.offsetWidth;
-       var h = window.innerHeight;
-       var w = window.innerWidth;
-
-
-       if (currH == h && currW == w) return;
-
-       frame = requestAnimationFrame(function () {
-         Chart.current.resize(currW, currH, w, h);
-         currH = h;
-         currW = w;
-         cw = cont.offsetWidth;
-       });
-     });
-}
-
-
-CandleStickChart.prototype.fitView = function(){
-    
-    //layout container
-     this.view.container.style.width = helpers.stylePx(this.width);
-     this.view.container.style.height = helpers.stylePx(this.height);
-
-     //correct dimensions and setup canvas
-     helpers.setCanvasWidth(this.view.yAxis_ctx, this.layout.yWidth);
-     helpers.setCanvasHeight(this.view.yAxis_ctx, this.layout.mainHeight);
-     this.view.yAxis.style.left = helpers.stylePx(this.width - this.layout.yWidth);
-     
-     this.view.xAxis.style.top = helpers.stylePx(this.layout.mainHeight);
-     helpers.setCanvasWidth(this.view.xAxis_ctx, this.layout.mainWidth);
-     
-     helpers.setCanvasWidth(this.view.grid_ctx, this.layout.mainWidth);
-     helpers.setCanvasHeight(this.view.grid_ctx, this.layout.mainHeight);
-     
-     helpers.setCanvasWidth(this.view.main_ctx, this.layout.mainWidth);
-     helpers.setCanvasHeight(this.view.main_ctx, this.layout.mainHeight);
-     
-     //draw frame
-     this.view.grid_ctx.beginPath();
-     this.view.grid_ctx.moveTo(0, this.layout.mainHeight);
-     this.view.grid_ctx.strokeStyle = "black";
-     this.view.grid_ctx.lineTo(this.layout.mainWidth, this.layout.mainHeight);
-     this.view.grid_ctx.lineTo(this.layout.mainWidth, 0);
-     this.view.grid_ctx.stroke();
-}
-
-CandleStickChart.prototype.scrollLayout = function(indexMove){
-    var recalc = false;
-    if (indexMove > 0){ //scroll left
-        var prevLastIndex = this.lastIndex - indexMove;
-        for (var i = prevLastIndex; i < this.lastIndex && this.lastIndex < this.data.length; i++){
-            var item = this.data[i];
-            if (item.high > this.layout.origMax)
-                recalc = true;
-            if (item.low < this.layout.origMin)
-                recalc = true;
-        }
-        if (recalc){
-            var lastIndex = Math.min(this.data.length - 1, this.lastIndex);
-            var count = layout.mainWidth
-            this.layout = calculateLayout(this.data, t)
-        }
+        if (!this.chartOptions.MinStep)
+            this.chartOptions.MinStep = Math.round(minStep / decimals);
+        if (!this.chartOptions.Decimals)
+            this.chartOptions.Decimals = decimals;
+        if (!this.chartOptions.TimeStep)
+            this.chartOptions.TimeStep = timeStep;
     }
 }
 
-CandleStickChart.prototype.calculateLayout = function(data, startIndex, count){
-    var max = data[startIndex].high;
-    var min = data[startIndex].low;
+CandleStickChart.prototype.calculateBounds = function(data, index, count){
+    var max = data[index].high;
+    var min = data[index].low;
 
     for (var i = 1; i < count; i++){
-        var item = data[startIndex + i]; //acquire min and max values
+        var item = data[index + i]; //acquire min and max values
         if (item.high > max) max = item.high;
         if (item.low < min) min = item.low;
     }
+}
 
-    var mainHeight = this.height - this.bottomHeight;
-    var maxYSteps = Math.floor(mainHeight / this.options.axisFontSize / 3);
+CandleStickChart.prototype.draw  = function(view, options){
+    helpers.clearCanvas(view.main_ctx);
+    helpers.clearCanvas(view.grid_ctx);
+    helpers.clearCanvas(view.xAxis_ctx);
+    helpers.clearCanvas(view.yAxis_ctx);
+    var h = view.mainHeight;
+    var w = view.mainWidth;
 
-    var diff = max - min;
-
-    var decimals = helpers.getDecimalPlaces(this.options.Decimals);
-    var k = this.options.MinStep*this.options.Decimals;
-    var evalStep = diff / maxYSteps;
-
-    var logStep = Math.pow(10, helpers.orderOfMagnitude(evalStep));
-    var step = Math.floor(Math.ceil(evalStep / logStep) / k) * k;
-
-    var origMin = min,
-        origMax = max;
-    //correct min and max to have some blank space at the top and the bottom of chart
-    var min = min - min % step;
-    var max = max + step - max % step;
-
-    var yLables = [];
-    var current = min;
-    while (current <= max){
-        yLables.push(current.toFixed(decimals));
-        current += step;
+    if (this.data.length == 0) {
+        return; //won't draw if empty array
     }
-    //calculate width item.keyof y width, multiply it by 1.1 to make it 10 percent wider for
-    var yWidth = Math.round(helpers.longestText(this.view.yAxis_ctx, yLables) * 1.1 + AXIS_MARK_SIZE + 2);
 
-    var mainWidth = Math.floor(this.width - yWidth);
-    //align to integer
-    yWidth = this.width - mainWidth;
+    var xStep = this.scale;
+    xStep = (xStep - xStep%2) || 2; //to have middle
 
+    var x = w - xStep / 2 + this.xOffset; //last candle left border
 
-    return {
-        max             : max,
-        min             : min,
-        origMax         : origMax,
-        origMin         : origMin,
-        decimals        : decimals,
-        yStepSize       : step,
-        mainWidth       : mainWidth,
-        mainHeight      : mainHeight,
-        yWidth 	        : yWidth,
-        yLabels         : yLables
+    var y = 0;
+    var ky = h / (this.layout.max - this.layout.min);
+    var layout = this.layout;
+    var calculateY = function(value){
+        return Math.round((layout.max - value)*ky);
     };
-
-}
-
-CandleStickChart.prototype.prepareLayout = function(){
-    if (this.data.length <= 1)
-        return;
-
-    //oofset by x axis where last candle will be
-    if (this.xOffset == undefined)
-        this.xOffset = 0;
-
-    //lastIndex - index of last visible candle
-    if (this.lastIndex == undefined){
-        this.lastIndex = this.data.length - 1;
-    }
-    var maxElement2Display = Math.floor(this.width / this.scale);
-
-    var correction = 0;
-    //in case, that we display blank space on the right after chart we will get lastIndex out of bound of data
-    //so we have to correct lastIndex to be inside data array
-    if (this.lastIndex > this.data.length - 1){
-        correction = this.lastIndex - this.data.length + 1;
-    }
-
-    var firstIndex = Math.max(0, this.lastIndex- maxElement2Display);
-    var count = Math.max(0, maxElement2Display - correction);
-
-    var layout = this.calculateLayout(this.data, firstIndex, count);
-
-    this.layout = layout;
-}
-
-
-CandleStickChart.prototype.draw = function(){
-    helpers.clearCanvas(this.view.main_ctx);
-    helpers.clearCanvas(this.view.grid_ctx);
-    helpers.clearCanvas(this.view.xAxis_ctx);
-    helpers.clearCanvas(this.view.yAxis_ctx);
-    
-     var h = this.layout.mainHeight;    
-     var w = this.layout.mainWidth;
- 
-     if (this.data.length == 0) {
-         drawTextInTheMiddle(this.ctx, "No data", this.ctx.canvas.width / 2, this.ctx.canvas.height / 2);
-         return; //won't draw if empty array
-     }
-     
-     var xStep = this.scale;
-     xStep = (xStep - xStep%2) || 2; //to have middle
-     
-     var x = w - xStep / 2 + this.xOffset; //last candle left border
-     
-     var y = 0;
-     var ky = h / (this.layout.max - this.layout.min);
-     var layout = this.layout;
-     var calculateY = function(value){
-          return Math.round((layout.max - value)*ky);
-     };
-     function drawCandle(candle, mid, width, padding, yfunc, context){          
-             
-          var left = mid - width / 2;
-       
-          var maj = candle.open;
-          var min = candle.close;
-
-          if (candle.open < candle.close){
-                  maj = candle.close;
-                  min = candle.open;
-          }
-          //Draw shadow          
-          context.moveTo(helpers.normalizeX(mid), yfunc(candle.high));
-          context.lineTo(helpers.normalizeX(mid), yfunc(candle.low));
-            
-          if (candle.isNeutral()){
-               context.moveTo(helpers.normalizeX(left), yfunc(maj));
-               context.lineTo(helpers.normalizeX(left + width), yfunc(maj));
-          }
-          else{
-               context.rect(helpers.normalizeX(left), yfunc(maj), width, yfunc(min)-yfunc(maj));
-               //context.fill();
-          }
-     };
-     
-     //prepare
-     var padding = Math.round(0.2 * xStep);
-          var width = xStep - 2 * padding;
-     
-     //draw dojies, shadows, candle borders, negative candles and x axis marks
-     this.view.main_ctx.beginPath();
-     this.view.main_ctx.strokeStyle = this.options.ShadowColor;
-     this.view.main_ctx.fillStyle = this.options.NegativeCandleColor;
-     
-     this.view.xAxis_ctx.beginPath();
-     this.view.xAxis_ctx.textAlign = "center";
-    this.view.xAxis_ctx.textBaseline = "top";
-     for (var i = this.lastIndex; i >= 0; i--){
-	if (i < this.data.length){
-	    var item = this.data[i];
-	    var left = x - xStep / 2 + padding;
-	    if (item.isNeutral() || item.isNegative()){ //draw full candle		
-		drawCandle.call(this, item, x, width, padding, calculateY, this.view.main_ctx);
-	    }
-	    //display x axis mark if necessary
-	    var displayXMark = false;
-               var xMark = "";
-               var boldMark = false;
-               if (i > 0){
-                    var prev = this.data[i-1];
-                    var key1 = prev.key;
-                    var key2 = item.key;
-                    if (key1.getFullYear() - key2.getFullYear() != 0){
-                         displayXMark = true;
-                         xMark = key2.getFullYear().toString();
-                         boldMark = true;
-                    }
-                    else if (key1.getMonth() - key2.getMonth() != 0){
-                         displayXMark = true;
-                         xMark = helpers.getShortMonthName(key2.getMonth());
-                         boldMark = true;
-                    }
-                    else if (key1.getDate() - key2.getDate() != 0){
-                         //displayXMark = true;
-                         xMark = key2.getDate().toString();
-                    }
-               }
-               if (displayXMark){
-                    var markX = x + xStep/2;                    
-                    if (boldMark){
-                         var font = this.view.xAxis_ctx.font;
-                         //make font bold
-                         this.view.xAxis_ctx.font = "bold "+font;
-                         this.view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
-                         //restore font
-                         this.view.xAxis_ctx.font = font;                         
-                    }
-                    else this.view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
-                    
-                    
-                    this.view.xAxis_ctx.moveTo(markX, 0);
-                    this.view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
-               }
-	}
-	
-	  if (x < 0) break;
-          x -= xStep;
-     }
-     this.view.main_ctx.stroke();
-     this.view.main_ctx.fill();
-    this.view.xAxis_ctx.stroke();
-     
-     var x = w - xStep / 2 + this.xOffset; //last candle left border
-     //draw left positive candles
-     this.view.main_ctx.beginPath();
-     this.view.main_ctx.fillStyle = this.options.PositiveCandleColor;
-     for(var i = this.lastIndex; i >= 0; i--){
-          if (i < this.data.length){
-               var item = this.data[i];
-	       if (item.isPositive())
-		drawCandle.call(this, item, x, width, padding, calculateY, this.view.main_ctx);
-               
-          }
-	  if (x < 0) break;
-          x -= xStep;
-     }
-     this.view.main_ctx.stroke();
-     this.view.main_ctx.fill();
-     
-     var priceDot = this.layout.min;
-
-     this.view.grid_ctx.beginPath();
-     this.view.yAxis_ctx.beginPath();
-     this.view.grid_ctx.strokeStyle = this.options.gridColor;
-     while (priceDot <= this.layout.max){
-          y = calculateY(priceDot);
-          this.view.yAxis_ctx.moveTo(0, y);
-          this.view.yAxis_ctx.lineTo(AXIS_MARK_SIZE, y);
-          if (priceDot != this.layout.min && priceDot !=this.layout.max)
-               this.view.yAxis_ctx.fillText(priceDot.toFixed(this.layout.decimals), AXIS_MARK_SIZE, y);
-          
-          this.view.grid_ctx.moveTo(0, y);
-          this.view.grid_ctx.lineTo(this.view.grid_ctx.canvas.width - 3, y);
-          priceDot = priceDot + this.layout.yStepSize; 
-     }
-     this.view.grid_ctx.stroke();
-     this.view.yAxis_ctx.stroke();
-}
-
-CandleStickChart.prototype.scroll = function(diff){
-     this.xOffset += diff;
-     var fullSteps = Math.floor(this.xOffset / this.scale);
-     if (fullSteps != 0){
-          this.xOffset -= fullSteps * this.scale;
-          this.lastIndex -= fullSteps;
-     }
-     
-     if (this.lastIndex < 0) this.lastIndex = 0;
-
-     this.prepareLayout();
-     this.draw();     
-}
-
-CandleStickChart.prototype.resize = function(width, height) {
-    
-     this.width = width;
-     this.height = height;
-     this.prepareLayout();
-     this.fitView();
-     this.draw();
-}
-
-//}).call(this);
-
-
-CandleStickChart.prototype.setScale = function(scale){
-    if (scale == undefined)
-        scale = 1;
-    if (scale <= 0)
-        throw new RangeError("unexpected scale value. scale must be greater than zero");
-}
-
-CandleStickChart.prototype.clear = function(){
-    this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height);
-    this.ctx_grid.clearRect(0, 0, this.ctx_grid.canvas.width, this.ctx_grid.canvas.height);
-    this.ctx_prices.clearRect(0, 0, this.ctx_prices.canvas.width, this.ctx_prices.canvas.height);
-    this.ctx_dates.clearRect(0, 0, this.ctx_dates.canvas.width, this.ctx_dates.canvas.height);
-}
-
-function addCandle(candle){
-    var redraw = false;
-    if (this.lastIndex >=  this.data.length - 1){
-        redraw = true; //need to redraw, we're snapped to last candle
-        this.lastIndex++;
-    }
-    this.data.push(candle);
-    return redraw;
-}
-
-function updateCandle(index, candle){
-    var redraw = isVisibleCandle.call(this, index);
-    var candle2update = this.data[index];
-    candle2update.update(candle);
-    return redraw;
-}
-//inserts candle before index
-function insertCandle(index, candle){
-    this.lastIndex++; //increment lastIndex cuz we will insert new candle
-    this.data.splice(index, 0, candle);
-    var redraw = isVisibleCandle.call(this, index);
-    return redraw;
-}
-
-CandleStickChart.prototype.update = function(candle){
-    var redraw = false;
-    if (this.data.length == 0 || this.data.last().key < candle.key){
-        redraw = addCandle.call(this, candle);
-    }
-    else{
-        var targetIndex = findKeyIndex.call(this.data, candle, function(candle, targetKey){
-            if (candle.key > targetKey) return 1;
-            if (candle.key < targetKey) return -1;
-            return 0;
-        });
-        if (targetIndex < 0){
-            //Стрранные дела, не нашли кандела
-            var targetIndex = ~targetIndex;
-            if (targetIndex == this.data.length)
-                redraw = addCandle.call(this, candle);
-            else redraw = insertCandle.call(this, targetIndex, candle);
+    function drawCandle(candle, mid, width, padding, yfunc, context){
+        var left = mid - width / 2;
+        var maj = candle.open;
+        var min = candle.close;
+        if (candle.open < candle.close){
+            maj = candle.close;
+            min = candle.open;
+        }
+        //Draw shadow
+        context.moveTo(helpers.normalizeX(mid), yfunc(candle.high));
+        context.lineTo(helpers.normalizeX(mid), yfunc(candle.low));
+helpers.extend(BaseChart, CandleStickChart);
+        if (candle.isNeutral()){
+            context.moveTo(helpers.normalizeX(left), yfunc(maj));
+            context.lineTo(helpers.normalizeX(left + width), yfunc(maj));
         }
         else{
-            redraw = updateCandle.call(this, targetIndex, candle);
+            context.rect(helpers.normalizeX(left), yfunc(maj), width, yfunc(min)-yfunc(maj));
         }
-    }
-    function doRedraw(){
-        this.clear();
-        this.draw();
-    }
+    };
 
-    if (redraw) requestAnimationFrame(doRedraw.bind(this));
+    //prepare
+    var padding = Math.round(0.2 * xStep);
+    var width = xStep - 2 * padding;
+
+    //draw dojies, shadows, candle borders, negative candles and x axis marks
+    view.main_ctx.beginPath();
+    view.main_ctx.strokeStyle = options.ShadowColor;
+    view.main_ctx.fillStyle = options.NegativeCandleColor;
+
+    view.xAxis_ctx.beginPath();
+    view.xAxis_ctx.textAlign = "center";
+    view.xAxis_ctx.textBaseline = "top";
+    for (var i = this.lastIndex; i >= 0; i--){
+        if (i < this.data.length){
+            var item = this.data[i];
+            var left = x - xStep / 2 + padding;
+            if (item.isNeutral() || item.isNegative()){ //draw full candle
+                drawCandle.call(this, item, x, width, padding, calculateY, this.view.main_ctx);
+            }
+            //display x axis mark if necessary
+            var displayXMark = false;
+            var xMark = "";
+            var boldMark = false;
+            if (i > 0){
+                var prev = this.data[i-1];
+                var key1 = prev.key;
+                var key2 = item.key;
+                if (key1.getFullYear() - key2.getFullYear() != 0){
+                     displayXMark = true;
+                     xMark = key2.getFullYear().toString();
+                     boldMark = true;
+                }
+                else if (key1.getMonth() - key2.getMonth() != 0){
+                     displayXMark = true;
+                     xMark = helpers.getShortMonthName(key2.getMonth());
+                     boldMark = true;
+                }
+                else if (key1.getDate() - key2.getDate() != 0){
+                     //displayXMark = true;
+                     xMark = key2.getDate().toString();
+                }
+            }
+            if (displayXMark){
+                var markX = x + xStep/2;
+                if (boldMark){
+                     var font = this.view.xAxis_ctx.font;
+                     //make font bold
+                     this.view.xAxis_ctx.font = "bold "+font;
+                     this.view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
+                     //restore font
+                     this.view.xAxis_ctx.font = font;
+                }
+                else this.view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
+
+
+                this.view.xAxis_ctx.moveTo(markX, 0);
+                this.view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
+            }
+        }
+
+        if (x < 0) break;
+        x -= xStep;
+    }
+    view.main_ctx.stroke();
+    view.main_ctx.fill();
+    view.xAxis_ctx.stroke();
+
+    var x = w - xStep / 2 + this.xOffset; //last candle left border
+    //draw left positive candles
+    view.main_ctx.beginPath();
+    view.main_ctx.fillStyle = options.PositiveCandleColor;
+    for(var i = this.lastIndex; i >= 0; i--){
+        if (i < this.data.length){
+            var item = this.data[i];
+            if (item.isPositive())
+                drawCandle.call(this, item, x, width, padding, calculateY, this.view.main_ctx);
+
+    }
+    if (x < 0) break;
+        x -= xStep;
+    }
+    view.main_ctx.stroke();
+    view.main_ctx.fill();
+
+    var priceDot = this.layout.min;
+
+    view.grid_ctx.beginPath();
+    view.yAxis_ctx.beginPath();
+    view.grid_ctx.strokeStyle = options.gridColor;
+    while (priceDot <= this.layout.max){
+        y = calculateY(priceDot);
+        view.yAxis_ctx.moveTo(0, y);
+        view.yAxis_ctx.lineTo(AXIS_MARK_SIZE, y);
+        if (priceDot != this.layout.min && priceDot !=this.layout.max)
+            view.yAxis_ctx.fillText(priceDot.toFixed(this.layout.decimals), AXIS_MARK_SIZE, y);
+
+        view.grid_ctx.moveTo(0, y);
+        view.grid_ctx.lineTo(view.grid_ctx.canvas.width - 3, y);
+        priceDot = priceDot + this.layout.yStepSize;
+    }
+    view.grid_ctx.stroke();
+    view.yAxis_ctx.stroke();
 }
+
+
+///////////////////////////////////////CandleStickChart///////////////////////////////////////
