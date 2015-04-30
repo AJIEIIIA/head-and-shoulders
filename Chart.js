@@ -275,14 +275,16 @@ scaleFactor: 1 - display whole dataset,  < 1 same as 1, > 1
 
 var Chart = {};
 
-Chart.create = function(width, height, data, options){
+Chart.create = function(width, height, data, opts){
     if (data.length < 2)
         return null;
+
+    var options = helpers.merge(opts, OPTIONS_DEFAULT);
 
      var csc = new CandleStickChart(data, options);
      csc.initialize();
      var view = new ChartView(width, height, options);
-     csc.prepareLayout();
+     csc.prepareLayout(width, height, options);
      view.chart(csc);
      view.fitView();
      view.draw();
@@ -449,9 +451,12 @@ ChartView.prototype.chart = function(chart){
 ChartView.prototype.fitView = function(){
     //layout container
     var layout = this.chart.layout;
-    var yWidth =  Math.round(helpers.longestText(this.view.yAxis_ctx, layout.yLables) * 1.1 + AXIS_MARK_SIZE + 2);
+    var yWidth =  Math.round(helpers.longestText(this.view.yAxis_ctx, layout.yLabels) * 1.1 + AXIS_MARK_SIZE + 2);
     var mainHeight = this.view.height - this.bottomHeight;
-    var mainWidth = Math.floor(this.width - yWidth);
+    var mainWidth = Math.floor(this.view.width - yWidth);
+
+    this.view.mainHeight = mainHeight;
+    this.view.mainWidth = mainWidth;
 
     this.view.container.style.width = helpers.stylePx(this.view.width);
     this.view.container.style.height = helpers.stylePx(this.view.height);
@@ -525,13 +530,13 @@ BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, 
     var origMin = min,
         origMax = max;
     //correct min and max to have some blank space at the top and the bottom of chart
-    var min = min - min % step;
+    var min = min - step - min % step;
     var max = max + step - max % step;
 
-    var yLables = [];
+    var yLabels = [];
     var current = min;
     while (current <= max){
-        yLables.push(current.toFixed(decimals));
+        yLabels.push(current.toFixed(decimals));
         current += step;
     }
 
@@ -542,14 +547,14 @@ BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, 
         origMin         : origMin,
         decimals        : decimals,
         yStepSize       : step,
-        yLabels         : yLables
+        yLabels         : yLabels
     };
 }
 //prepares chart to draw. finnaly sets this.layout property with key drawing parameters.
 //this.layout should be used to calculate y axis width and canvas dimensions
 //height is a height of canvas where chart would be placed (not count x axis heigth or other space)
 //width is the width of canvas where chart would be placed (not count x axis heigth or other space)
-BaseChart.prototype.prepareLayout = function(height, width, options){
+BaseChart.prototype.prepareLayout = function(width, height, options){
     if (!this.data || !this.data instanceof Array)
         throw new "Invalid data or data isn't array!";
 
@@ -576,7 +581,7 @@ BaseChart.prototype.prepareLayout = function(height, width, options){
     var firstIndex = Math.max(0, this.lastIndex- maxElement2Display);
     var count = Math.max(0, maxElement2Display - correction);
 
-    var layout = this.calculateLayout(this.data, firstIndex, count, height, width);
+    var layout = this.calculateLayout(this.data, firstIndex, count, height, width, options);
 
     this.layout = layout;
 }
@@ -618,6 +623,8 @@ function CandleStickChart(data, options){
 }
 
 CandleStickChart.prototype.initialize = function(){
+    CandleStickChart.superclass.initialize.call(this);
+
     if (!this.chartOptions.MinStep
         || !this.chartOptions.Decimals
         || !this.chartOptions.TimeStep){
@@ -670,6 +677,10 @@ CandleStickChart.prototype.calculateBounds = function(data, index, count){
         if (item.high > max) max = item.high;
         if (item.low < min) min = item.low;
     }
+    return {
+        max : max,
+        min : min
+    };
 }
 
 CandleStickChart.prototype.draw  = function(view, options){
@@ -733,7 +744,7 @@ helpers.extend(BaseChart, CandleStickChart);
             var item = this.data[i];
             var left = x - xStep / 2 + padding;
             if (item.isNeutral() || item.isNegative()){ //draw full candle
-                drawCandle.call(this, item, x, width, padding, calculateY, this.view.main_ctx);
+                drawCandle.call(this, item, x, width, padding, calculateY, view.main_ctx);
             }
             //display x axis mark if necessary
             var displayXMark = false;
@@ -761,18 +772,18 @@ helpers.extend(BaseChart, CandleStickChart);
             if (displayXMark){
                 var markX = x + xStep/2;
                 if (boldMark){
-                     var font = this.view.xAxis_ctx.font;
+                     var font = view.xAxis_ctx.font;
                      //make font bold
-                     this.view.xAxis_ctx.font = "bold "+font;
-                     this.view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
+                     view.xAxis_ctx.font = "bold "+font;
+                     view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
                      //restore font
-                     this.view.xAxis_ctx.font = font;
+                     view.xAxis_ctx.font = font;
                 }
-                else this.view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
+                else view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
 
 
-                this.view.xAxis_ctx.moveTo(markX, 0);
-                this.view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
+                view.xAxis_ctx.moveTo(markX, 0);
+                view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
             }
         }
 
@@ -791,7 +802,7 @@ helpers.extend(BaseChart, CandleStickChart);
         if (i < this.data.length){
             var item = this.data[i];
             if (item.isPositive())
-                drawCandle.call(this, item, x, width, padding, calculateY, this.view.main_ctx);
+                drawCandle.call(this, item, x, width, padding, calculateY, view.main_ctx);
 
     }
     if (x < 0) break;
