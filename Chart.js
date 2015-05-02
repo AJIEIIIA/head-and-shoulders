@@ -1,9 +1,8 @@
 /*
-todo выносим Chart как базовый для рисования нескольких типов графиков.
+todo несколько графиков пользуются одним layout - merge layout. grid - отдельный объект?
 todo несколько панелей с графиками - возможность добавления индикаторов под освновной график
 todo Разобраться с .5 для линий. Как рисовать так чтобы было красиво?
 todo Почему то при scale = 2 получается, что свечки друг на друга залезают и последняя свечка уходит половинкой за ось У
-todo Обработка масштабривания окна и канваса. Не масштабируется в высоту
 todo Доделать нормально разметку горизонтальной оси, чтобы выводить через равные промежутки
 todo Перерисовка графика - добавить возможность добавлять и обновлять свечки.
 todo Учесть возможность добавления истории в начало графика
@@ -228,6 +227,9 @@ helpers.getMaximumHeight = function(domNode) {
   return container.clientHeight;
 };
 
+
+
+//////////////////////////////////////////////////CandleStick////////////////////////////////////////////
 function CandleStick(key, open, high, low, close, volume){
     this.open = open;
     this.high = high;
@@ -263,7 +265,7 @@ CandleStick.prototype.isNegative = function(){
 CandleStick.prototype.isPositive = function(){
     return this.open < this.close;
 }
-
+//////////////////////////////////////////////////CandleStick////////////////////////////////////////////
 
 /*
 CandleStickChart
@@ -275,21 +277,23 @@ scaleFactor: 1 - display whole dataset,  < 1 same as 1, > 1
 
 var Chart = {};
 
-Chart.create = function(width, height, data, opts){
-    if (data.length < 2)
-        return null;
-
+Chart.create = function(width, height, opts){
     var options = helpers.merge(opts, OPTIONS_DEFAULT);
+    var view = new ChartView(width, height, options);
+    this.presenter = view;
+    return this;
+}
 
-     var csc = new CandleStickChart(data, options);
+Chart.CandleStick = function(data, candleStockChartOptions){
+     var csc = new CandleStickChart(data, candleStockChartOptions);
      csc.initialize();
-     var view = new ChartView(width, height, options);
-     csc.prepareLayout(width, height, options);
-     view.chart(csc);
-     view.fitView();
-     view.draw();
-     return view;
+     this.presenter.setChart(csc);
+}
 
+Chart.Line = function(data, lineChartOptions){
+    var lc = new LineChart(data, lineChartOptions);
+    lc.initialize();
+    this.presenter.setChart(lc);
 }
 
 function ChartView(width, height, options){
@@ -304,6 +308,7 @@ function ChartView(width, height, options){
     };
 
     this.options = options;
+    this.charts = [];
 
     this.view.container.id = "stock-chart-container";
     this.view.container.appendChild(this.view.main);
@@ -348,109 +353,86 @@ function ChartView(width, height, options){
     this.view.grid.style.top = helpers.stylePx(0);
     this.view.grid.style.zIndex = 1;
 
-    function registerEvents(){
-        var mouseDown = false;
-        var timeout = null;
-        var startX = 0;
-        var frame = null;
+    var root = this;
+    var mouseDown = false;
+    var timeout = null;
+    var startX = 0;
+    var frame = null;
 
-        var cont = document.getElementById("chart-container");
-        var currH = window.innerHeight;//document.body.offsetHeight;//document.body.clientHeight;
-        var currW = window.innerWidth;//document.body.offsetWidth;
+    var cont = document.getElementById("chart-container");
+    var currH = window.innerHeight;//document.body.offsetHeight;//document.body.clientHeight;
+    var currW = window.innerWidth;//document.body.offsetWidth;
 
-        helpers.registerEvent(this.view.main, "mousedown", function (event) {
-            if (event.which == 1)
-                mouseDown = true;
-            if (mouseDown) {
-                startX = event.clientX;
-            }
-        });
+    helpers.registerEvent(this.view.main, "mousedown", function (event) {
+        if (event.which == 1)
+            mouseDown = true;
+        if (mouseDown) {
+            startX = event.clientX;
+        }
+    });
 
-        helpers.registerEvent(this.view.main, "mouseup", function (event) {
-            if (event.which == 1)
-                mouseDown = false;
-        });
+    helpers.registerEvent(this.view.main, "mouseup", function (event) {
+        if (event.which == 1)
+            mouseDown = false;
+    });
 
-        helpers.registerEvent(this.view.main, "touchend", function(event){ mouseDown = false;});
+    helpers.registerEvent(this.view.main, "touchend", function(event){ mouseDown = false;});
 
-        helpers.registerEvent(this.view.main, "mouseout", function (event) {
-            if (mouseDown) mouseDown = false;
-        });
+    helpers.registerEvent(this.view.main, "mouseout", function (event) {
+        if (mouseDown) mouseDown = false;
+    });
 
-        helpers.registerEvent(this.view.main, "touchstart", function(event){
-            if (event.touches.length == 1){
-                mouseDown = true;
-                startX = event.touches[0].clientX;
-            }
-        });
+    helpers.registerEvent(this.view.main, "touchstart", function(event){
+        if (event.touches.length == 1){
+            mouseDown = true;
+            startX = event.touches[0].clientX;
+        }
+    });
 
-        var scrollHandler = function (event) {
-            if (mouseDown) {
+    var scrollHandler = function (event) {
+        if (mouseDown) {
+            event.preventDefault();
+            var x = event.clientX;
+            //scrolling
+            if (frame)
+                cancelAnimationFrame(frame);
+
+            frame = requestAnimationFrame(function () {
+                root.scroll(x - startX);
+                startX = x;
+            });
+        }
+    };
+
+    helpers.registerEvent(this.view.main, "touchmove", function(event){
+        if (event.touches.length == 1){
+            if (mouseDown){
                 event.preventDefault();
-                var x = event.clientX;
+                var x = event.touches[0].clientX;
                 //scrolling
                 if (frame)
                     cancelAnimationFrame(frame);
 
                 frame = requestAnimationFrame(function () {
-                    Chart.current.scroll(x - startX);
+                    root.scroll(x - startX);
                     startX = x;
                 });
             }
-        };
+        }
+    });
 
-        helpers.registerEvent(this.view.main, "touchmove", function(event){
-            if (event.touches.length == 1){
-                if (mouseDown){
-                    event.preventDefault();
-                    var x = event.touches[0].clientX;
-                    //scrolling
-                    if (frame)
-                        cancelAnimationFrame(frame);
-
-                    frame = requestAnimationFrame(function () {
-                        Chart.current.scroll(x - startX);
-                        startX = x;
-                    });
-                }
-            }
-        });
-
-        helpers.registerEvent(this.view.main, "mousemove", scrollHandler);
-
-        var cw = cont.offsetWidth;
-
-        helpers.registerEvent(window, "resize", function (event) {
-            return;
-            if (frame)
-                cancelAnimationFrame(frame);
-            //var h = document.body.offsetHeight;
-            //var w = document.body.offsetWidth;
-            var h = window.innerHeight;
-            var w = window.innerWidth;
-
-            if (currH == h && currW == w) return;
-
-            frame = requestAnimationFrame(function () {
-                Chart.current.resize(currW, currH, w, h);
-                currH = h;
-                currW = w;
-                cw = cont.offsetWidth;
-            });
-        });
-    }
-
-    registerEvents.call(this);
+    helpers.registerEvent(this.view.main, "mousemove", scrollHandler);
 }
 
-ChartView.prototype.chart = function(chart){
-    this.chart = chart;
+ChartView.prototype.setChart = function(chart){
+    this.charts.push(chart);
+    chart.prepareLayout(this.view.width, this.view.height, this.options);
     this.fitView();
 }
 
 ChartView.prototype.fitView = function(){
     //layout container
-    var layout = this.chart.layout;
+    var layout = this.charts[0].layout;
     var yWidth =  Math.round(helpers.longestText(this.view.yAxis_ctx, layout.yLabels) * 1.1 + AXIS_MARK_SIZE + 2);
     var mainHeight = this.view.height - this.bottomHeight;
     var mainWidth = Math.floor(this.view.width - yWidth);
@@ -485,7 +467,22 @@ ChartView.prototype.fitView = function(){
 }
 
 ChartView.prototype.draw = function(){
-    this.chart.draw(this.view, this.options);
+    helpers.clearCanvas(this.view.main_ctx);
+    helpers.clearCanvas(this.view.grid_ctx);
+    helpers.clearCanvas(this.view.xAxis_ctx);
+    helpers.clearCanvas(this.view.yAxis_ctx);
+
+    this.charts.forEach(function(el){
+        el.draw(this.view, this.options);
+    }, this);
+}
+var drawRequest;
+ChartView.prototype.scroll = function(diff){
+    this.charts.forEach(function(el){
+        el.scroll(diff);
+        el.prepareLayout(this.view.width, this.view.height, this.options);
+    }, this);
+    this.draw();
 }
 
 //////////////////////////////////BaseChart////////////////////////////////////////////////
@@ -500,7 +497,7 @@ function BaseChart(data, chartOptions){
 //initializes common parameters of the chart. Sets scale to default.
 //Should be called just after chart object creation
 BaseChart.prototype.initialize = function(){
-    this.scale = INITIAL_SCALE;
+    this.scale = 2;
 
 }
 //override for calculating min and max values for specific chart types
@@ -515,6 +512,17 @@ BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, 
     var bounds = this.calculateBounds(data, firstIndex, count)
     var max = bounds.max;
     var min = bounds.min;
+    if (max == min){
+        if (max == 0){
+            max = 1;
+            min = 0;
+        }
+        else{
+            max = max + Math.sign(max) * .1;
+            min = min - Math.sign(min) * .1;
+        }
+    }
+
 
     var maxYSteps = Math.floor(height / options.axisFontSize / 3);
 
@@ -569,17 +577,23 @@ BaseChart.prototype.prepareLayout = function(width, height, options){
     if (this.lastIndex == undefined){
         this.lastIndex = this.data.length - 1;
     }
-    var maxElement2Display = Math.floor(width / this.scale);
-
-    var correction = 0;
     //in case, that we display blank space on the right after chart we will get lastIndex out of bound of data
     //so we have to correct lastIndex to be inside data array
+    var correction = 0;
     if (this.lastIndex > this.data.length - 1){
         correction = this.lastIndex - this.data.length + 1;
     }
 
-    var firstIndex = Math.max(0, this.lastIndex- maxElement2Display);
-    var count = Math.max(0, maxElement2Display - correction);
+    var visibleLength = Math.min(this.data.length, this.lastIndex + 1);
+
+    var maxElement2Display = Math.max(0, Math.floor(width / this.scale) - correction);
+    var firstIndex = 0;
+    if (maxElement2Display > 0){
+        maxElement2Display = Math.min(visibleLength, maxElement2Display);
+        firstIndex = Math.max(0, this.lastIndex - correction - maxElement2Display);
+    }
+
+    var count = Math.max(0, maxElement2Display);
 
     var layout = this.calculateLayout(this.data, firstIndex, count, height, width, options);
 
@@ -588,7 +602,7 @@ BaseChart.prototype.prepareLayout = function(width, height, options){
 //moves chart's last index accordingly to pixelDiff
 //should be callued when scrolling chart
 BaseChart.prototype.scroll = function(pixelsDiff){
-    var xOffset = this.xOffset + diff;
+    var xOffset = this.xOffset + pixelsDiff;
     var lastIndex = this.lastIndex;
     if (lastIndex == 0 && xOffset > 0) {
         //no need to scroll further because we see the only point
@@ -596,13 +610,13 @@ BaseChart.prototype.scroll = function(pixelsDiff){
         return;
     }
 
-    var fullSteps = Math.floor(this.xOffset / this.scale);
+    var fullSteps = Math.floor(xOffset / this.scale);
     if (fullSteps != 0){
         xOffset -= fullSteps * this.scale;
         lastIndex -= fullSteps;
     }
     this.xOffset = xOffset;
-
+    this.lastIndex = lastIndex;
     if (this.lastIndex < 0) this.lastIndex = 0;
 }
 //draws chart on the view object
@@ -617,7 +631,10 @@ BaseChart.prototype.draw = function(view, options){
 ///////////////////////////////////////CandleStickChart///////////////////////////////////////
 helpers.extend(BaseChart, CandleStickChart);
 
-
+/**
+data is array of CandleStick
+options must define properties MinStep, Decimals, TimeStep
+*/
 function CandleStickChart(data, options){
     CandleStickChart.superclass.constructor.apply(this, arguments);
 }
@@ -684,10 +701,6 @@ CandleStickChart.prototype.calculateBounds = function(data, index, count){
 }
 
 CandleStickChart.prototype.draw  = function(view, options){
-    helpers.clearCanvas(view.main_ctx);
-    helpers.clearCanvas(view.grid_ctx);
-    helpers.clearCanvas(view.xAxis_ctx);
-    helpers.clearCanvas(view.yAxis_ctx);
     var h = view.mainHeight;
     var w = view.mainWidth;
 
@@ -717,7 +730,6 @@ CandleStickChart.prototype.draw  = function(view, options){
         //Draw shadow
         context.moveTo(helpers.normalizeX(mid), yfunc(candle.high));
         context.lineTo(helpers.normalizeX(mid), yfunc(candle.low));
-helpers.extend(BaseChart, CandleStickChart);
         if (candle.isNeutral()){
             context.moveTo(helpers.normalizeX(left), yfunc(maj));
             context.lineTo(helpers.normalizeX(left + width), yfunc(maj));
@@ -833,3 +845,93 @@ helpers.extend(BaseChart, CandleStickChart);
 
 
 ///////////////////////////////////////CandleStickChart///////////////////////////////////////
+
+
+///////////////////////////////////////LineChart//////////////////////////////////////////////
+helpers.extend(BaseChart, LineChart);
+
+function LineChart(data, options){
+    CandleStickChart.superclass.constructor.apply(this, arguments);
+}
+
+LineChart.prototype.initialize = function(){
+    LineChart.superclass.initialize.call(this);
+
+}
+
+LineChart.prototype.calculateBounds = function(data, index, count){
+    var max = data[index];
+    var min = data[index];
+
+    for (var i = 1; i < count; i++){
+        var item = data[index + i]; //acquire min and max values
+        if (item > max) max = item;
+        if (item < min) min = item;
+    }
+    return {
+        max : max,
+        min : min
+    };
+}
+
+LineChart.prototype.draw  = function(view, options){
+
+    var h = view.mainHeight;
+    var w = view.mainWidth;
+
+    if (this.data.length == 0) {
+        return; //won't draw if empty array
+    }
+
+    var xStep = this.scale;
+    xStep = (xStep - xStep%2) || 2; //to have middle
+
+    var x = w - xStep / 2 + this.xOffset; //last candle left border
+
+    var y = 0;
+    var ky = h / (this.layout.max - this.layout.min);
+    var layout = this.layout;
+    var calculateY = function(value){
+        return Math.round((layout.max - value)*ky);
+    };
+
+    //draw dojies, shadows, candle borders, negative candles and x axis marks
+    view.main_ctx.beginPath();
+    view.main_ctx.strokeStyle = options.ShadowColor;
+
+    var first = this.data[this.lastIndex];
+    view.main_ctx.moveTo(x, calculateY(first));
+    x -= xStep;
+    for (var i = this.lastIndex - 1; i >= 0; i--){
+        if (i < this.data.length){
+            var item = this.data[i];
+            view.main_ctx.lineTo(x, calculateY(item))
+        }
+
+        if (x < 0) break;
+        x -= xStep;
+    }
+    view.main_ctx.stroke();
+
+
+    var priceDot = this.layout.min;
+
+    view.grid_ctx.beginPath();
+    view.yAxis_ctx.beginPath();
+    view.grid_ctx.strokeStyle = options.gridColor;
+    while (priceDot <= this.layout.max){
+        y = calculateY(priceDot);
+        view.yAxis_ctx.moveTo(0, y);
+        view.yAxis_ctx.lineTo(AXIS_MARK_SIZE, y);
+        if (priceDot != this.layout.min && priceDot !=this.layout.max)
+            view.yAxis_ctx.fillText(priceDot.toFixed(this.layout.decimals), AXIS_MARK_SIZE, y);
+
+        view.grid_ctx.moveTo(0, y);
+        view.grid_ctx.lineTo(view.grid_ctx.canvas.width - 3, y);
+        priceDot = priceDot + this.layout.yStepSize;
+    }
+    view.grid_ctx.stroke();
+    view.yAxis_ctx.stroke();
+}
+
+///////////////////////////////////////LineChart//////////////////////////////////////////////
