@@ -1,8 +1,9 @@
 /*
 todo несколько графиков пользуются одним layout - merge layout. grid - отдельный объект?
-todo несколько панелей с графиками - возможность добавления индикаторов под освновной график
-todo Разобраться с .5 для линий. Как рисовать так чтобы было красиво?
+todo несколько панелей с графиками - возможность добавления индикаторов под освновной график. Объект PriceChart. Возможно канвасы стоит засунуть в  метод draw каждого графика? Получается сильная связность представления и логики
+todo неправильно учитываются опции на графике. Опции берутся те, что заданы в начале при создании ChartView, а надо использовать для каждого графика свои
 todo Почему то при scale = 2 получается, что свечки друг на друга залезают и последняя свечка уходит половинкой за ось У
+todo Разобраться с .5 для линий. Как рисовать так чтобы было красиво?
 todo Доделать нормально разметку горизонтальной оси, чтобы выводить через равные промежутки
 todo Перерисовка графика - добавить возможность добавлять и обновлять свечки.
 todo Учесть возможность добавления истории в начало графика
@@ -47,6 +48,11 @@ var OPTIONS_DEFAULT = {
     PositiveCandleBorderColor   : "Green",
     //sets color for candles shadow
     ShadowColor                 : "Black",
+    //sets strictness of min and max values on chart.
+    //if true chart bounds base on min and max values in data array
+    //if false adds step to min and max
+    StrictMin                   : false,
+    StrictMax                   : false,
     //sets chart time step in minutes
     //(if zero - value would be determined automatically using minimal difference between two adjacent candles in data array)
     TimeStep                    : 0,
@@ -179,16 +185,16 @@ helpers.fillCanvas = function(context, color){
 helpers.setCanvasHeight = function(ctx, height){
      if (window.devicePixelRatio) {	    
           ctx.canvas.style.height = height + "px";
-          ctx.canvas.height = height * window.devicePixelRatio*2;
-          ctx.scale(window.devicePixelRatio*2, window.devicePixelRatio*2);
+          ctx.canvas.height = height * window.devicePixelRatio;
+          ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
      }
 }
 
 helpers.setCanvasWidth = function(ctx, width){
      if (window.devicePixelRatio) {
           ctx.canvas.style.width = width + "px";
-          ctx.canvas.width = width * window.devicePixelRatio*2;
-          ctx.scale(window.devicePixelRatio*2, window.devicePixelRatio*2);
+          ctx.canvas.width = width * window.devicePixelRatio;
+          ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
      }
 }
 
@@ -227,6 +233,18 @@ helpers.getMaximumHeight = function(domNode) {
   return container.clientHeight;
 };
 
+helpers.requestAnimationFrame = function(){
+    return window.webkitRequestAnimationFrame ||
+    		window.mozRequestAnimationFrame ||
+    		window.oRequestAnimationFrame ||
+    		window.msRequestAnimationFrame ||
+    		window.requestAnimationFrame ||
+    		function( /* function FrameRequestCallback */ callback, /* DOMElement Element */ element ) {
+
+    			window.setTimeout( callback, 1000 / 60 );
+
+    		};
+}
 
 
 //////////////////////////////////////////////////CandleStick////////////////////////////////////////////
@@ -296,6 +314,12 @@ Chart.Line = function(data, lineChartOptions){
     this.presenter.setChart(lc);
 }
 
+Chart.Bar = function(data, barChartOptions){
+    var bc = new BarChart(data, barChartOptions);
+     bc.initialize();
+     this.presenter.setChart(bc);
+}
+
 function ChartView(width, height, options){
     this.view = {
         width       : width,
@@ -310,7 +334,9 @@ function ChartView(width, height, options){
     this.options = options;
     this.charts = [];
 
+
     this.view.container.id = "stock-chart-container";
+
     this.view.container.appendChild(this.view.main);
     this.view.container.appendChild(this.view.grid);
     this.view.container.appendChild(this.view.xAxis);
@@ -388,7 +414,7 @@ function ChartView(width, height, options){
             startX = event.touches[0].clientX;
         }
     });
-
+    var time;
     var scrollHandler = function (event) {
         if (mouseDown) {
             event.preventDefault();
@@ -397,7 +423,7 @@ function ChartView(width, height, options){
             if (frame)
                 cancelAnimationFrame(frame);
 
-            frame = requestAnimationFrame(function () {
+            frame = helpers.requestAnimationFrame()(function () {
                 root.scroll(x - startX);
                 startX = x;
             });
@@ -413,7 +439,7 @@ function ChartView(width, height, options){
                 if (frame)
                     cancelAnimationFrame(frame);
 
-                frame = requestAnimationFrame(function () {
+                frame = helpers.requestAnimationFrame()(function () {
                     root.scroll(x - startX);
                     startX = x;
                 });
@@ -430,7 +456,7 @@ ChartView.prototype.setChart = function(chart){
     this.fitView();
 }
 
-ChartView.prototype.fitView = function(){
+ChartView.prototype.fitView = function(reset){
     //layout container
     var layout = this.charts[0].layout;
     var yWidth =  Math.round(helpers.longestText(this.view.yAxis_ctx, layout.yLabels) * 1.1 + AXIS_MARK_SIZE + 2);
@@ -497,19 +523,19 @@ function BaseChart(data, chartOptions){
 //initializes common parameters of the chart. Sets scale to default.
 //Should be called just after chart object creation
 BaseChart.prototype.initialize = function(){
-    this.scale = 2;
+    this.scale = 10;
 
 }
 //override for calculating min and max values for specific chart types
  //should return object {max, min}
-BaseChart.prototype.calculateBounds = function(data, index, count){
+BaseChart.prototype.calculateBounds = function(index, count){
     //no op basically
 
 }
 //calculates layout parameters for chart
 //real min and max, y axis step size, y axis labels array
 BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, width, options){
-    var bounds = this.calculateBounds(data, firstIndex, count)
+    var bounds = this.calculateBounds(firstIndex, count)
     var max = bounds.max;
     var min = bounds.min;
     if (max == min){
@@ -524,7 +550,7 @@ BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, 
     }
 
 
-    var maxYSteps = Math.floor(height / options.axisFontSize / 3);
+    var maxYSteps = Math.floor(height / options.axisFontSize / 2);
 
     var diff = max - min;
 
@@ -533,13 +559,27 @@ BaseChart.prototype.calculateLayout = function(data, firstIndex, count, height, 
     var evalStep = diff / maxYSteps;
 
     var logStep = Math.pow(10, helpers.orderOfMagnitude(evalStep));
-    var step = Math.floor(Math.ceil(evalStep / logStep) / k) * k;
+
+    var steps = diff / logStep;
+    while(2 * steps > maxYSteps){
+        logStep *= 2;
+        var steps = diff / logStep;
+    }
+    var step = Math.floor(logStep / k) * k;
 
     var origMin = min,
         origMax = max;
     //correct min and max to have some blank space at the top and the bottom of chart
-    var min = min - step - min % step;
-    var max = max + step - max % step;
+    if (!options.StrictMin){
+        var tail = min % step;
+        if (tail < step / 2) tail += step;
+        min = min - tail;
+    }
+    if (!options.StrictMax){
+        var tail = step - max % step;
+        if (tail < step / 2) tail += step;
+        max = max + tail;
+    }
 
     var yLabels = [];
     var current = min;
@@ -685,12 +725,12 @@ CandleStickChart.prototype.initialize = function(){
     }
 }
 
-CandleStickChart.prototype.calculateBounds = function(data, index, count){
-    var max = data[index].high;
-    var min = data[index].low;
+CandleStickChart.prototype.calculateBounds = function(index, count){
+    var max = this.data[index].high;
+    var min = this.data[index].low;
 
     for (var i = 1; i < count; i++){
-        var item = data[index + i]; //acquire min and max values
+        var item = this.data[index + i]; //acquire min and max values
         if (item.high > max) max = item.high;
         if (item.low < min) min = item.low;
     }
@@ -797,6 +837,7 @@ CandleStickChart.prototype.draw  = function(view, options){
                 view.xAxis_ctx.moveTo(markX, 0);
                 view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
             }
+
         }
 
         if (x < 0) break;
@@ -851,7 +892,7 @@ CandleStickChart.prototype.draw  = function(view, options){
 helpers.extend(BaseChart, LineChart);
 
 function LineChart(data, options){
-    CandleStickChart.superclass.constructor.apply(this, arguments);
+    LineChart.superclass.constructor.apply(this, arguments);
 }
 
 LineChart.prototype.initialize = function(){
@@ -859,12 +900,12 @@ LineChart.prototype.initialize = function(){
 
 }
 
-LineChart.prototype.calculateBounds = function(data, index, count){
-    var max = data[index];
-    var min = data[index];
+LineChart.prototype.calculateBounds = function(index, count){
+    var max = this.data[index];
+    var min = this.data[index];
 
     for (var i = 1; i < count; i++){
-        var item = data[index + i]; //acquire min and max values
+        var item = this.data[index + i]; //acquire min and max values
         if (item > max) max = item;
         if (item < min) min = item;
     }
@@ -935,3 +976,122 @@ LineChart.prototype.draw  = function(view, options){
 }
 
 ///////////////////////////////////////LineChart//////////////////////////////////////////////
+
+////////////////////////////////////////BarChart//////////////////////////////////////////////
+helpers.extend(BaseChart, BarChart);
+
+function BarChart(data, options){
+    BarChart.superclass.constructor.apply(this, arguments);
+}
+
+BarChart.prototype.initialize = function(){
+    BarChart.superclass.initialize.call(this);
+
+}
+
+BarChart.prototype.calculateBounds = function(index, count){
+    var max = this.data[index];
+    var min = 0;
+
+    for (var i = 1; i < count; i++){
+        var item = this.data[index + i]; //acquire min and max values
+        if (item > max) max = item;
+        if (item < min) min = item;
+    }
+    return {
+        max : max,
+        min : min
+    };
+}
+
+BarChart.prototype.draw = function(view, options){
+    var h = view.mainHeight;
+    var w = view.mainWidth;
+
+    if (this.data.length == 0) {
+        return; //won't draw if empty array
+    }
+
+    var xStep = this.scale;
+    xStep = (xStep - xStep%2) || 2; //to have middle
+
+    var x = w - xStep / 2 + this.xOffset; //last candle left border
+
+    var y = 0;
+    var ky = h / (this.layout.max - this.layout.min);
+    var layout = this.layout;
+    var calculateY = function(value){
+        return Math.round((layout.max - value)*ky);
+    };
+     //prepare
+    var padding = Math.round(0.2 * xStep);
+    var width = xStep - 2 * padding;
+
+    //draw dojies, shadows, candle borders, negative candles and x axis marks
+    view.main_ctx.beginPath();
+    view.main_ctx.strokeStyle = options.ShadowColor;
+    view.main_ctx.fillStyle = options.PositiveCandleColor;
+
+    view.xAxis_ctx.beginPath();
+    view.xAxis_ctx.textAlign = "center";
+    view.xAxis_ctx.textBaseline = "top";
+    for (var i = this.lastIndex; i >= 0; i--){
+        if (i < this.data.length){
+            var item = this.data[i];
+            var rectH = calculateY(item);
+            view.main_ctx.rect(helpers.normalizeX(x), calculateY(item), xStep, calculateY(0) - calculateY(item));
+        }
+
+        if (x < 0) break;
+        x -= xStep;
+    }
+    view.main_ctx.fill();
+    view.main_ctx.stroke();
+    view.xAxis_ctx.stroke();
+
+    var priceDot = this.layout.min;
+
+    view.grid_ctx.beginPath();
+    view.yAxis_ctx.beginPath();
+    view.grid_ctx.strokeStyle = options.gridColor;
+    while (priceDot <= this.layout.max){
+        y = calculateY(priceDot);
+        view.yAxis_ctx.moveTo(0, y);
+        view.yAxis_ctx.lineTo(AXIS_MARK_SIZE, y);
+        if (priceDot != this.layout.min && priceDot !=this.layout.max)
+            view.yAxis_ctx.fillText(priceDot.toFixed(this.layout.decimals), AXIS_MARK_SIZE, y);
+
+        view.grid_ctx.moveTo(0, y);
+        view.grid_ctx.lineTo(view.grid_ctx.canvas.width - 3, y);
+        priceDot = priceDot + this.layout.yStepSize;
+    }
+    view.grid_ctx.stroke();
+    view.yAxis_ctx.stroke();
+}
+
+////////////////////////////////////////BarChart//////////////////////////////////////////////
+
+////////////////////////////////////////PriceChart//////////////////////////////////////////////
+helpers.extend(BaseChart, PriceChart);
+
+function PriceChart(data, options){
+    BaseChart.superclass.constructor.apply(this, arguments);
+    var candles = data.map(function(c){return new CandleStick(c.key, c.open, c.high, c.low, c.close);});
+    var volumes = data.map(function(c){return c.volume;});
+    this.priceChart = new CandleStickChart(data, options);
+    this.volumeChart = new BarChart(volumes, options);
+}
+
+PriceChart.prototype.initialize = function(){
+    this.priceChart.initialize();
+    this.volumeChart.initialize();
+}
+
+PriceChart.prototype.calculateBounds = function(index, count){
+    return this.priceChart.calculateBounds(index, count);
+}
+
+PriceChart.prototype.draw = function(view, options){
+
+}
+////////////////////////////////////////PriceChart//////////////////////////////////////////////
