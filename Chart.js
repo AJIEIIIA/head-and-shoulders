@@ -1,14 +1,15 @@
 /*
+todo при максимальном скролле влево почему то последняя метка по оси Х перескакивает вперед на 2 свечки
+todo 3й канвас для вывода свечей
 todo несколько графиков пользуются одним layout - merge layout. grid - отдельный объект?
 todo несколько панелей с графиками - возможность добавления индикаторов под освновной график. Объект PriceChart. Возможно канвасы стоит засунуть в  метод draw каждого графика? Получается сильная связность представления и логики
 todo неправильно учитываются опции на графике. Опции берутся те, что заданы в начале при создании ChartView, а надо использовать для каждого графика свои
 todo Почему то при scale = 2 получается, что свечки друг на друга залезают и последняя свечка уходит половинкой за ось У
 todo Разобраться с .5 для линий. Как рисовать так чтобы было красиво?
-todo Доделать нормально разметку горизонтальной оси, чтобы выводить через равные промежутки
 todo Перерисовка графика - добавить возможность добавлять и обновлять свечки.
 todo Учесть возможность добавления истории в начало графика
 todo Курсор выделения свечей (Переходим на систему вычисление координаты Х из вермени?)
-todo Все равно не быстро скроллится на планшете. Поизучать еще оптимизацию отрисовки. Бысто скроллится на маленьком канвасе - уверен отрисовка зависит от размера канваса
+todo 30 fps на планшете - следующая цель - 60
 */
 
 //(function(){
@@ -65,11 +66,102 @@ var OPTIONS_DEFAULT = {
 
 
 };
+//represents basic chart period types
+var CHART_PERIOD_TYPES = {
+    Minute  : "m",
+    Hour    : "h",
+    Day     : "d",
+    Week    : "w",
+    Month   : "M",
+    Year    : "y"
+};
+
 
 var AXIS_MARK_SIZE = 3; //3 px for axis mark
 
 //helper methods
 var helpers = {};
+
+helpers.isRoundDate = function(date, periodType, period){
+    switch(periodType){
+        case CHART_PERIOD_TYPES.Minute:
+        break;
+        case CHART_PERIOD_TYPES.Hour:
+        break;
+        case CHART_PERIOD_TYPES.Day:
+        case CHART_PERIOD_TYPES.Week:
+        break;
+        case CHART_PERIOD_TYPES.Month:
+        break;
+        case CHART_PERIOD_TYPES.Year:
+        break;
+        default:
+        return false;
+    }
+}
+
+helpers.xLabelUtility = function(freq, periodType, period){
+    var step;
+    var testPeriod = period;
+    switch(periodType){
+        case CHART_PERIOD_TYPES.Minute:
+            step = 60/testPeriod; //60 minutes = hour. hour is target bigger mark fro minute
+            if (step >= freq){
+                return {
+                    selector    : function(d1, d2){return d1.getHour() != d2.getHour();},
+                    frequency   : Math.round(step / freq)
+                };
+            }
+            else testPeriod = testPeriod / 60;  //how much in hours
+        case CHART_PERIOD_TYPES.Hour:
+            var step = 24 / testPeriod; //24 hour per day. day is terget bigger mark for hour
+            if (step >= freq){
+                return {
+                    selector    : function(d1, d2){return d1.getDay() != d2.getDay();},
+                    frequency   : Math.round(step / freq)
+                }
+            }
+            else testPeriod = testPeriod / 24; //how much in days
+        case CHART_PERIOD_TYPES.Week:
+            testPeriod = testPeriod * 7;
+        case CHART_PERIOD_TYPES.Day:
+            var step = 21 / testPeriod; //21 working day in month. month is terget bigger mark for day
+            if (step >= freq){
+                return {
+                    selector    : function(d1, d2){return d1.getMonth() != d2.getMonth();},
+                    frequency   : Math.round(step / freq)
+                }
+            }
+            else testPeriod = testPeriod / 21; //how much in months
+        case CHART_PERIOD_TYPES.Month:
+            var step = 12 / testPeriod; //12 months in year. year is terget bigger mark for month
+            if (step >= freq){
+                return {
+                    selector    : function(d1, d2){return d1.getYear() != d2.getYear();},
+                    frequency   : Math.round(step / freq)
+                }
+            }
+            else testPeriod = testPeriod / 12; //how much in years
+        case CHART_PERIOD_TYPES.Year:
+            var decades = 10;
+            while (true){
+                step = decades / testPeriod;
+                if (step >= freq){
+                    return {
+                        selector    : function(d1, d2){return d1.getFullYear()/decades != d2.getFullYear()/decades;},
+                        frequency   : Math.round(step / freq)
+                    }
+                }
+                else decades += 10;
+            }
+        default:
+            return {
+                selector    : function(d1, d2){return false;},
+                frequency   : 1
+            };
+    }
+}
+
  //Binary searches index of key, using comparator function in array passed as collection
 //If key not present in array returns ~of nearest greater element.
 //If there's on greater element, returns ~ of array length  
@@ -105,6 +197,7 @@ helpers.findFirstIndex = function(collection, key, comparator){
     }
     return ~i0;
 };
+
 //merges primary and secondary objects to new one.
 //gets attributes from primary with higher priority than from secondary
 //i.e. if primary and secondary have attribute a, than result object will get a = primary.a 
@@ -198,12 +291,27 @@ helpers.setCanvasWidth = function(ctx, width){
      }
 }
 
-helpers.clearCanvas = function(ctx){
+helpers.clearCanvas = function(ctx, width, height){
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+//    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+//    return;
+//    var canvas = ctx.canvas;
+//    canvas.width = canvas.width;
+//    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+    return;
+    if (width)
+        helpers.setCanvasWidth(ctx, width);
+    else helpers.setCanvasWidth(ctx, ctx.canvas.width);
+    return;
+
+    if (width && height)
+        ctx.clearRect(0, 0, width, height);
+    else ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 }
 //Adds .5 to floor of x;
 helpers.normalizeX = function(x){
-     return ~~x + .5;
+     return ~~(x) + .5;
 }
 
 helpers.registerEvent = function(element, event, handler){
@@ -319,6 +427,7 @@ Chart.Bar = function(data, barChartOptions){
      bc.initialize();
      this.presenter.setChart(bc);
 }
+
 
 function ChartView(width, height, options){
     this.view = {
@@ -493,21 +602,22 @@ ChartView.prototype.fitView = function(reset){
 }
 
 ChartView.prototype.draw = function(){
-    helpers.clearCanvas(this.view.main_ctx);
-    helpers.clearCanvas(this.view.grid_ctx);
-    helpers.clearCanvas(this.view.xAxis_ctx);
-    helpers.clearCanvas(this.view.yAxis_ctx);
+    helpers.clearCanvas(this.view.main_ctx, this.view.mainWidth, this.view.mainHeight);
+    helpers.clearCanvas(this.view.grid_ctx, this.view.mainWidth, this.view.mainHeight);
+    helpers.clearCanvas(this.view.xAxis_ctx, this.view.mainWidth, this.bottomHeight);
+    helpers.clearCanvas(this.view.yAxis_ctx, this.view.width - this.view.mainWidth, this.view.mainHeight);
 
-    this.charts.forEach(function(el){
-        el.draw(this.view, this.options);
-    }, this);
+    for (var i = 0; i < this.charts.length; i++)
+        this.charts[i].draw(this.view, this.options);
+
 }
 var drawRequest;
 ChartView.prototype.scroll = function(diff){
-    this.charts.forEach(function(el){
+    for (var i = 0; i < this.charts.length; i++){
+        var el = this.charts[i];
         el.scroll(diff);
         el.prepareLayout(this.view.width, this.view.height, this.options);
-    }, this);
+    }
     this.draw();
 }
 
@@ -523,7 +633,7 @@ function BaseChart(data, chartOptions){
 //initializes common parameters of the chart. Sets scale to default.
 //Should be called just after chart object creation
 BaseChart.prototype.initialize = function(){
-    this.scale = 10;
+    this.scale = 4;
 
 }
 //override for calculating min and max values for specific chart types
@@ -740,6 +850,48 @@ CandleStickChart.prototype.calculateBounds = function(index, count){
     };
 }
 
+CandleStickChart.prototype.calculateLayout = function(data, firstIndex, count, height, width, options){
+    var layout = CandleStickChart.superclass.calculateLayout.apply(this, arguments);
+
+    var freq = 40 / this.scale;
+
+    var utility = helpers.xLabelUtility(freq, this.chartOptions.ChartPeriodType, this.chartOptions.ChartPeriod);
+    var prev = data[firstIndex];
+    var curr;
+    var labels = [];
+    var lastLabelIndex = firstIndex - 1;
+    for (var i = firstIndex + 1; i < count + firstIndex; i++){
+        curr = data[i];
+        if (utility.selector(prev.key, curr.key)){
+            for (var j = utility.frequency - 1; j > 0; j--){
+                var index = Math.floor(i - j * freq);
+                if (index > lastLabelIndex) labels.push({
+                                                label   : data[index].key,
+                                                index   : index
+                                            });
+
+            }
+            labels.push({
+                label   : curr.key,
+                index   : i
+            });
+            lastLabelIndex = i;
+        }
+        prev = curr;
+    }
+
+    for (var j = 1; j < utility.frequency; j++) {
+        var index = Math.floor(lastLabelIndex + j * freq);
+        if (index < count + firstIndex) labels.push({
+                                label   : data[index].key,
+                                index   : index
+                            });
+    }
+    layout.xLabels = labels;
+    return layout;
+
+}
+
 CandleStickChart.prototype.draw  = function(view, options){
     var h = view.mainHeight;
     var w = view.mainWidth;
@@ -759,85 +911,51 @@ CandleStickChart.prototype.draw  = function(view, options){
     var calculateY = function(value){
         return Math.round((layout.max - value)*ky);
     };
-    function drawCandle(candle, mid, width, padding, yfunc, context){
-        var left = mid - width / 2;
-        var maj = candle.open;
-        var min = candle.close;
-        if (candle.open < candle.close){
-            maj = candle.close;
-            min = candle.open;
-        }
-        //Draw shadow
-        context.moveTo(helpers.normalizeX(mid), yfunc(candle.high));
-        context.lineTo(helpers.normalizeX(mid), yfunc(candle.low));
-        if (candle.isNeutral()){
-            context.moveTo(helpers.normalizeX(left), yfunc(maj));
-            context.lineTo(helpers.normalizeX(left + width), yfunc(maj));
-        }
-        else{
-            context.rect(helpers.normalizeX(left), yfunc(maj), width, yfunc(min)-yfunc(maj));
-        }
-    };
 
     //prepare
     var padding = Math.round(0.2 * xStep);
     var width = xStep - 2 * padding;
 
     //draw dojies, shadows, candle borders, negative candles and x axis marks
-    view.main_ctx.beginPath();
-    view.main_ctx.strokeStyle = options.ShadowColor;
-    view.main_ctx.fillStyle = options.NegativeCandleColor;
+    var context = view.main_ctx;
+    context.beginPath();
+    context.strokeStyle = options.ShadowColor;
+    context.fillStyle = options.NegativeCandleColor;
+    var context2 = view.grid_ctx;
+    context2.beginPath();
+        context2.strokeStyle = options.ShadowColor;
+        context2.fillStyle = options.PositiveCandleColor;
 
-    view.xAxis_ctx.beginPath();
-    view.xAxis_ctx.textAlign = "center";
-    view.xAxis_ctx.textBaseline = "top";
+
+    var font = helpers.makeFont(options.axisFontSize, options.axisFont);
+    view.xAxis_ctx.font = font;
+    var maj, min;
+    var bolded = false;
+
     for (var i = this.lastIndex; i >= 0; i--){
         if (i < this.data.length){
             var item = this.data[i];
-            var left = x - xStep / 2 + padding;
-            if (item.isNeutral() || item.isNegative()){ //draw full candle
-                drawCandle.call(this, item, x, width, padding, calculateY, view.main_ctx);
-            }
-            //display x axis mark if necessary
-            var displayXMark = false;
-            var xMark = "";
-            var boldMark = false;
-            if (i > 0){
-                var prev = this.data[i-1];
-                var key1 = prev.key;
-                var key2 = item.key;
-                if (key1.getFullYear() - key2.getFullYear() != 0){
-                     displayXMark = true;
-                     xMark = key2.getFullYear().toString();
-                     boldMark = true;
-                }
-                else if (key1.getMonth() - key2.getMonth() != 0){
-                     displayXMark = true;
-                     xMark = helpers.getShortMonthName(key2.getMonth());
-                     boldMark = true;
-                }
-                else if (key1.getDate() - key2.getDate() != 0){
-                     //displayXMark = true;
-                     xMark = key2.getDate().toString();
-                }
-            }
-            if (displayXMark){
-                var markX = x + xStep/2;
-                if (boldMark){
-                     var font = view.xAxis_ctx.font;
-                     //make font bold
-                     view.xAxis_ctx.font = "bold "+font;
-                     view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
-                     //restore font
-                     view.xAxis_ctx.font = font;
-                }
-                else view.xAxis_ctx.fillText(xMark, markX, AXIS_MARK_SIZE);
+            var left = x - width / 2;
 
-
-                view.xAxis_ctx.moveTo(markX, 0);
-                view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
+            context.moveTo(helpers.normalizeX(x), calculateY(item.high));
+            context.lineTo(helpers.normalizeX(x), calculateY(item.low));
+            if (item.isNegative()){
+                maj = item.close;
+                            min = item.open;
+                context.rect(helpers.normalizeX(left), calculateY(maj), width, Math.round(ky*(maj - min)));
             }
+            else if (item.isNeutral()){
+            maj = item.close;
+                        min = item.open;
+                context.moveTo(helpers.normalizeX(left), calculateY(maj));
+                context.lineTo(helpers.normalizeX(left + width), calculateY(maj));
+            }
+            else if (item.isPositive()){
+            maj = item.open;
+                        min = item.close;
+                       context2.rect(helpers.normalizeX(left), calculateY(maj), width, Math.round(ky*(maj - min)));
 
+            }
         }
 
         if (x < 0) break;
@@ -845,30 +963,29 @@ CandleStickChart.prototype.draw  = function(view, options){
     }
     view.main_ctx.stroke();
     view.main_ctx.fill();
-    view.xAxis_ctx.stroke();
+    context2.stroke();
+    context2.fill();
 
-    var x = w - xStep / 2 + this.xOffset; //last candle left border
-    //draw left positive candles
-    view.main_ctx.beginPath();
-    view.main_ctx.fillStyle = options.PositiveCandleColor;
-    for(var i = this.lastIndex; i >= 0; i--){
-        if (i < this.data.length){
-            var item = this.data[i];
-            if (item.isPositive())
-                drawCandle.call(this, item, x, width, padding, calculateY, view.main_ctx);
-
+    view.xAxis_ctx.beginPath();
+    view.xAxis_ctx.textAlign = "center";
+    view.xAxis_ctx.textBaseline = "top";
+    view.grid_ctx.beginPath();
+    view.grid_ctx.strokeStyle = options.gridColor;
+    x = w - xStep / 2 + this.xOffset; //last candle left border
+    for (var i = layout.xLabels.length - 1; i >= 0; i--){
+        var lab = layout.xLabels[i];
+        var markX = x - (this.lastIndex - lab.index) * xStep;
+        view.xAxis_ctx.moveTo(markX, 0);
+        view.xAxis_ctx.lineTo(markX, AXIS_MARK_SIZE);
+        var text = lab.label.getDate() + " " + helpers.getShortMonthName(lab.label.getMonth());
+        view.xAxis_ctx.fillText(text, markX, AXIS_MARK_SIZE);
+        view.grid_ctx.moveTo(markX, 0);
+        view.grid_ctx.lineTo(markX, view.grid_ctx.canvas.height);
     }
-    if (x < 0) break;
-        x -= xStep;
-    }
-    view.main_ctx.stroke();
-    view.main_ctx.fill();
 
     var priceDot = this.layout.min;
 
-    view.grid_ctx.beginPath();
     view.yAxis_ctx.beginPath();
-    view.grid_ctx.strokeStyle = options.gridColor;
     while (priceDot <= this.layout.max){
         y = calculateY(priceDot);
         view.yAxis_ctx.moveTo(0, y);
@@ -881,6 +998,7 @@ CandleStickChart.prototype.draw  = function(view, options){
         priceDot = priceDot + this.layout.yStepSize;
     }
     view.grid_ctx.stroke();
+    view.xAxis_ctx.stroke();
     view.yAxis_ctx.stroke();
 }
 
@@ -1095,3 +1213,39 @@ PriceChart.prototype.draw = function(view, options){
 
 }
 ////////////////////////////////////////PriceChart//////////////////////////////////////////////
+
+function SimpleMovingAverage(data, parameter){
+    var ma = [];
+    var sum = 0;
+    var n = parameter - 1;
+    for (var i=0; i < data.length; i++){
+        sum += data[i];
+        if (i < n)
+            ma.push(null);
+        else{
+            ma.push(sum/parameter);
+            sum -= data[i-n];
+        }
+    }
+    return ma;
+}
+
+function ExponentialMovingAverage(data, parameter){
+    var ema = [];
+    var sum = 0;
+    var n = parameter - 1;
+    for (var i = 0; i < data.length; i++){
+        sum += data[i];
+        if (i < n)
+            ema.push(null);
+        else{
+            if (i == n)
+                ema.push(sum/parameter);
+            else{
+
+            }
+            sum -= data[i-n];
+        }
+    }
+}
+
